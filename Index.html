@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OSRS GE + High Alch Price Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>OSRS Grand Exchange + High Alchemy Tool</h1>
+      <p>
+        Live prices from the OSRS Wiki real-time prices API, combined with item mapping data for
+        High Alchemy, Low Alchemy, and shop values.
+      </p>
+    </header>
+
+    <section class="controls" aria-label="Filters and controls">
+      <label>
+        Search item
+        <input id="searchInput" type="search" placeholder="Rune scimitar, Shark, Nature rune..." />
+      </label>
+
+      <label>
+        Members
+        <select id="memberFilter">
+          <option value="all">All items</option>
+          <option value="members">Members only</option>
+          <option value="f2p">Free-to-play only</option>
+        </select>
+      </label>
+
+      <label>
+        Min buy (high)
+        <input id="minPriceInput" type="number" min="0" step="1" placeholder="0" />
+      </label>
+
+      <label>
+        Max buy (high)
+        <input id="maxPriceInput" type="number" min="0" step="1" placeholder="Any" />
+      </label>
+
+      <label>
+        Min alch profit
+        <input id="minProfitInput" type="number" step="1" placeholder="0" />
+      </label>
+
+      <details class="column-picker">
+        <summary>Show / hide columns</summary>
+        <div id="columnOptions" class="column-options"></div>
+      </details>
+
+      <button id="refreshBtn" type="button">Refresh data</button>
+      <button id="resetBtn" type="button" class="secondary">Reset filters</button>
+    </section>
+
+    <section class="stats" aria-live="polite">
+      <span id="status">Loading data...</span>
+      <span id="count"></span>
+      <span id="updated"></span>
+      <span id="natureRunePrice"></span>
+    </section>
+
+    <div class="table-wrap">
+      <table id="itemsTable">
+        <thead>
+          <tr>
+            <th data-key="name">Item</th>
+            <th data-key="high">Buy (high)</th>
+            <th data-key="low">Sell (low)</th>
+            <th data-key="spread">Spread</th>
+            <th data-key="highalch">High Alch</th>
+            <th data-key="lowalch">Low Alch</th>
+            <th data-key="value">Store Value</th>
+            <th data-key="volume">Trade Volume (24h)</th>
+            <th data-key="alchProfit">Alch Profit*</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+
+    <footer>
+      <small>
+        *Alch Profit = High Alch - Buy (high) - Nature rune price (auto-fetched from GE).
+      </small>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

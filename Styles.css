@@ -1,0 +1,148 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #111827;
+  color: #e5e7eb;
+}
+
+.container {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+header h1 {
+  margin: 0;
+}
+
+header p {
+  color: #cbd5e1;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+input,
+select,
+button {
+  border-radius: 0.5rem;
+  border: 1px solid #374151;
+  background: #1f2937;
+  color: #f9fafb;
+  padding: 0.55rem 0.65rem;
+}
+
+button {
+  cursor: pointer;
+  font-weight: 700;
+  margin-top: auto;
+}
+
+button:hover {
+  background: #374151;
+}
+
+button.secondary {
+  background: #0f172a;
+}
+
+.column-picker {
+  border: 1px solid #374151;
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  background: #0f172a;
+}
+
+.column-picker summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.column-options {
+  margin-top: 0.65rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.column-options label {
+  flex-direction: row;
+  align-items: center;
+  font-weight: 500;
+}
+
+.column-options input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+  color: #cbd5e1;
+}
+
+.table-wrap {
+  overflow: auto;
+  border: 1px solid #374151;
+  border-radius: 0.75rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.6rem;
+  border-bottom: 1px solid #374151;
+  white-space: nowrap;
+  text-align: right;
+}
+
+th:first-child,
+td:first-child {
+  text-align: left;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #0b1220;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hidden-column {
+  display: none;
+}
+
+tbody tr:hover {
+  background: #1e293b;
+}
+
+.pos { color: #4ade80; }
+.neg { color: #f87171; }
+
+footer {
+  margin-top: 0.75rem;
+  color: #94a3b8;
+}
