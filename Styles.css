@@ -99,6 +99,20 @@ button.secondary {
   color: #cbd5e1;
 }
 
+.pagination-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+#pageInfo {
+  color: #cbd5e1;
+  min-width: 8.5rem;
+  text-align: center;
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid #374151;
@@ -121,6 +135,23 @@ td {
 th:first-child,
 td:first-child {
   text-align: left;
+}
+
+.item-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.item-icon,
+.item-icon-placeholder {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+}
+
+.item-icon-placeholder {
+  display: inline-block;
 }
 
 th {
