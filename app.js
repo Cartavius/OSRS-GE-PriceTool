@@ -4,6 +4,7 @@ const API_BASE_CANDIDATES = [
 ];
 const NATURE_RUNE_ITEM_ID = 561;
 const CACHE_KEY_PREFIX = 'osrs_ge_cache_v1';
+const FAVORITES_KEY = 'osrs_ge_favorites_v1';
 const CACHE_TTL_MS = {
   mapping: 24 * 60 * 60 * 1000,
   latest: 60 * 1000,
@@ -40,6 +41,8 @@ const state = {
   latestTimestamp: null,
   natureRunePrice: null,
   volumeWindow: '24h',
+  favoritesFilter: 'all',
+  favorites: new Set(),
   visibleColumns: new Set(defaultColumns),
   currentPage: 1,
   pageSize: 100,
@@ -48,6 +51,7 @@ const state = {
 const el = {
   search: document.getElementById('searchInput'),
   members: document.getElementById('memberFilter'),
+  favorites: document.getElementById('favoritesFilter'),
   minPrice: document.getElementById('minPriceInput'),
   maxPrice: document.getElementById('maxPriceInput'),
   minProfit: document.getElementById('minProfitInput'),
@@ -94,6 +98,44 @@ function formatBuyLimit(value) {
 
 function getVolumeWindowLabel(windowKey) {
   return VOLUME_WINDOW_LABELS[windowKey] ?? '24h';
+}
+
+function loadFavorites() {
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+
+    const ids = parsed
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0);
+
+    return new Set(ids);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveFavorites() {
+  try {
+    localStorage.setItem(FAVORITES_KEY, JSON.stringify([...state.favorites]));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function isFavorite(itemId) {
+  return state.favorites.has(itemId);
+}
+
+function toggleFavorite(itemId) {
+  if (isFavorite(itemId)) {
+    state.favorites.delete(itemId);
+  } else {
+    state.favorites.add(itemId);
+  }
+  saveFavorites();
 }
 
 function extractTimedVolume(entry) {
@@ -172,16 +214,19 @@ function updateVisibleColumns() {
 function applyFilters({ resetPage = true } = {}) {
   const query = el.search.value.trim().toLowerCase();
   const membersFilter = el.members.value;
+  const favoritesFilter = el.favorites.value;
   const minPrice = normalizeNum(el.minPrice.value);
   const maxPrice = normalizeNum(el.maxPrice.value);
   const minProfit = normalizeNum(el.minProfit.value);
   const minVolume = normalizeNum(el.minVolume.value);
+  state.favoritesFilter = favoritesFilter === 'favorites' ? 'favorites' : 'all';
 
   state.filtered = state.items.filter((item) => {
     if (query && !item.name.toLowerCase().includes(query)) return false;
 
     if (membersFilter === 'members' && !item.members) return false;
     if (membersFilter === 'f2p' && item.members) return false;
+    if (state.favoritesFilter === 'favorites' && !isFavorite(item.id)) return false;
 
     if (minPrice !== null && (item.high ?? -1) < minPrice) return false;
     if (maxPrice !== null && (item.high ?? Number.MAX_SAFE_INTEGER) > maxPrice) return false;
@@ -205,36 +250,93 @@ function renderTable() {
   const pageStart = (state.currentPage - 1) * state.pageSize;
   const pageItems = state.filtered.slice(pageStart, pageStart + state.pageSize);
 
-  const rows = pageItems
-    .map((item) => {
-      const profitClass = item.alchProfit > 0 ? 'pos' : item.alchProfit < 0 ? 'neg' : '';
-      const iconHtml = item.iconUrl
-        ? `<img class="item-icon" src="${item.iconUrl}" alt="" loading="lazy" decoding="async" width="24" height="24" />`
-        : '<span class="item-icon-placeholder" aria-hidden="true"></span>';
+  el.tbody.textContent = '';
+  for (const item of pageItems) {
+    const tr = document.createElement('tr');
+    const profitClass = item.alchProfit > 0 ? 'pos' : item.alchProfit < 0 ? 'neg' : '';
 
-      return `
-        <tr>
-          <td>
-            <div class="item-cell">
-              ${iconHtml}
-              <span>${item.name}</span>
-            </div>
-          </td>
-          <td>${formatCoins(item.high)}</td>
-          <td>${formatCoins(item.low)}</td>
-          <td>${formatCoins(item.spread)}</td>
-          <td>${formatCoins(item.highalch)}</td>
-          <td>${formatCoins(item.lowalch)}</td>
-          <td>${formatCoins(item.value)}</td>
-          <td>${formatVolume(item.volume)}</td>
-          <td>${formatBuyLimit(item.buyLimit)}</td>
-          <td class="${profitClass}">${formatCoins(item.alchProfit)}</td>
-        </tr>
-      `;
-    })
-    .join('');
+    const nameTd = document.createElement('td');
+    const itemCell = document.createElement('div');
+    itemCell.className = 'item-cell';
 
-  el.tbody.innerHTML = rows;
+    const favoriteBtn = document.createElement('button');
+    const favorite = isFavorite(item.id);
+    favoriteBtn.type = 'button';
+    favoriteBtn.className = `favorite-toggle${favorite ? ' active' : ''}`;
+    favoriteBtn.setAttribute('aria-label', favorite ? `Remove ${item.name} from favorites` : `Add ${item.name} to favorites`);
+    favoriteBtn.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+    favoriteBtn.textContent = favorite ? '★' : '☆';
+    favoriteBtn.addEventListener('click', () => {
+      toggleFavorite(item.id);
+      applyFilters({ resetPage: false });
+    });
+    itemCell.appendChild(favoriteBtn);
+
+    if (item.iconUrl) {
+      const icon = document.createElement('img');
+      icon.className = 'item-icon';
+      icon.src = item.iconUrl;
+      icon.alt = '';
+      icon.loading = 'lazy';
+      icon.decoding = 'async';
+      icon.width = 24;
+      icon.height = 24;
+      itemCell.appendChild(icon);
+    } else {
+      const iconPlaceholder = document.createElement('span');
+      iconPlaceholder.className = 'item-icon-placeholder';
+      iconPlaceholder.setAttribute('aria-hidden', 'true');
+      itemCell.appendChild(iconPlaceholder);
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = item.name ?? '';
+    itemCell.appendChild(nameSpan);
+    nameTd.appendChild(itemCell);
+    tr.appendChild(nameTd);
+
+    const highTd = document.createElement('td');
+    highTd.textContent = formatCoins(item.high);
+    tr.appendChild(highTd);
+
+    const lowTd = document.createElement('td');
+    lowTd.textContent = formatCoins(item.low);
+    tr.appendChild(lowTd);
+
+    const spreadTd = document.createElement('td');
+    spreadTd.textContent = formatCoins(item.spread);
+    tr.appendChild(spreadTd);
+
+    const highAlchTd = document.createElement('td');
+    highAlchTd.textContent = formatCoins(item.highalch);
+    tr.appendChild(highAlchTd);
+
+    const lowAlchTd = document.createElement('td');
+    lowAlchTd.textContent = formatCoins(item.lowalch);
+    tr.appendChild(lowAlchTd);
+
+    const valueTd = document.createElement('td');
+    valueTd.textContent = formatCoins(item.value);
+    tr.appendChild(valueTd);
+
+    const volumeTd = document.createElement('td');
+    volumeTd.textContent = formatVolume(item.volume);
+    tr.appendChild(volumeTd);
+
+    const buyLimitTd = document.createElement('td');
+    buyLimitTd.textContent = formatBuyLimit(item.buyLimit);
+    tr.appendChild(buyLimitTd);
+
+    const profitTd = document.createElement('td');
+    if (profitClass) {
+      profitTd.className = profitClass;
+    }
+    profitTd.textContent = formatCoins(item.alchProfit);
+    tr.appendChild(profitTd);
+
+    el.tbody.appendChild(tr);
+  }
+
   el.count.textContent = `Visible items: ${fmtNumber.format(state.filtered.length)} / ${fmtNumber.format(state.items.length)}`;
   el.pageInfo.textContent = `Page ${fmtNumber.format(state.currentPage)} / ${fmtNumber.format(totalPages)}`;
   el.prevPage.disabled = state.currentPage <= 1;
@@ -432,6 +534,7 @@ async function loadData({ forceRefresh = false } = {}) {
 function resetFilters() {
   el.search.value = '';
   el.members.value = 'all';
+  el.favorites.value = 'all';
   el.minPrice.value = '';
   el.maxPrice.value = '';
   el.minProfit.value = '';
@@ -440,6 +543,7 @@ function resetFilters() {
   state.sortKey = 'alchProfit';
   state.sortDirection = 'desc';
   state.volumeWindow = '24h';
+  state.favoritesFilter = 'all';
   updateVolumeUiLabels();
   applyVolumeWindowToItems();
   state.currentPage = 1;
@@ -480,7 +584,7 @@ function renderColumnOptions() {
 }
 
 function setupEvents() {
-  [el.search, el.members, el.minPrice, el.maxPrice, el.minProfit, el.minVolume].forEach((input) => {
+  [el.search, el.members, el.favorites, el.minPrice, el.maxPrice, el.minProfit, el.minVolume].forEach((input) => {
     input.addEventListener('input', applyFilters);
     input.addEventListener('change', applyFilters);
   });
@@ -533,6 +637,7 @@ function setupEvents() {
   });
 }
 
+state.favorites = loadFavorites();
 renderColumnOptions();
 updateVolumeUiLabels();
 setupEvents();

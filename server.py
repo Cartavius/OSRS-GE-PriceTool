@@ -7,10 +7,32 @@ from urllib.request import Request, urlopen
 
 UPSTREAM_BASE = "https://prices.runescape.wiki/api/v1/osrs"
 DEFAULT_USER_AGENT = "OSRS-GE-PriceTool/1.2 (+https://github.com/yourname/osrs-ge-pricetool)"
+ALLOWED_ENDPOINTS = {"mapping", "latest", "volumes", "5m", "1h"}
 
 
 class Handler(SimpleHTTPRequestHandler):
     user_agent = DEFAULT_USER_AGENT
+
+    @staticmethod
+    def _is_client_disconnect(error):
+        return isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError))
+
+    def end_headers(self):
+        # Baseline hardening headers for both static assets and proxied responses.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "img-src 'self' https://oldschool.runescape.wiki data:; "
+            "connect-src 'self' https://prices.runescape.wiki; "
+            "object-src 'none'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'",
+        )
+        super().end_headers()
 
     def do_GET(self):
         if self.path.startswith("/api/v1/osrs/"):
@@ -20,7 +42,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def proxy_api(self):
         endpoint = self.path[len("/api/v1/osrs/") :]
-        if not endpoint or "?" in endpoint:
+        if not endpoint or "?" in endpoint or endpoint not in ALLOWED_ENDPOINTS:
             self.send_error(400, "Invalid API endpoint")
             return
 
@@ -48,14 +70,22 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             payload = {"error": "Upstream request failed", "details": str(error)}
-            self.wfile.write(json.dumps(payload).encode("utf-8"))
+            try:
+                self.wfile.write(json.dumps(payload).encode("utf-8"))
+            except OSError as write_error:
+                if not self._is_client_disconnect(write_error):
+                    raise
             return
 
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except OSError as write_error:
+            if not self._is_client_disconnect(write_error):
+                raise
 
 
 def main():
