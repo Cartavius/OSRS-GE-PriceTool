@@ -10,10 +10,27 @@ Web app for browsing Old School RuneScape Grand Exchange data with filters, sort
 ## Quick Start
 
 ```bash
-python3 server.py --port 8080 --user-agent "OSRS-GE-PriceTool/1.2 (+https://github.com/Cartavius/OSRS-GE-PriceTool)"
+python3 server.py
 ```
 
 Open: <http://localhost:8080>
+
+## Configuration
+
+`server.py` loads defaults from `server.config.json` (if present).
+
+- Precedence: `CLI args > server.config.json > built-in defaults`
+- Default config path can be overridden with:
+
+```bash
+python3 server.py --config my-config.json
+```
+
+Example one-off override:
+
+```bash
+python3 server.py --port 9090 --no-icon-debug
+```
 
 ## One-File Run
 
@@ -36,6 +53,9 @@ It serves the app, proxies API requests with the configured `User-Agent`, and op
 - Column show/hide picker.
 - Local API proxy with custom `User-Agent`.
 - Client-side caching to reduce repeat API requests.
+- Icon cache/mirroring with staged background refresh.
+- Rate-limit-aware icon fetching (budgeted window).
+- Icon stats endpoint at `/icon/stats`.
 
 ## Data Source
 
@@ -47,6 +67,8 @@ It serves the app, proxies API requests with the configured `User-Agent`, and op
 - `Styles.css`: styles
 - `app.js`: client logic and rendering
 - `server.py`: local static server + API proxy
+- `server.config.json`: runtime defaults for local server behavior
+- `osrs_ge_tool.py`: single-file launcher with embedded frontend assets
 
 ## Notes
 
@@ -57,3 +79,4 @@ It serves the app, proxies API requests with the configured `User-Agent`, and op
 
 - If the UI cannot load data, verify `/api/v1/osrs/*` requests in browser DevTools.
 - If running from file directly fails due request restrictions, run through `server.py` and use `http://localhost:8080`.
+- Check icon mirror health and rate-limit usage at `http://localhost:8080/icon/stats`.
