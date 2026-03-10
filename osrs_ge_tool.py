@@ -1,4 +1,350 @@
-const API_BASE_CANDIDATES = [
+﻿#!/usr/bin/env python3
+import argparse
+import json
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+UPSTREAM_BASE = "https://prices.runescape.wiki/api/v1/osrs"
+DEFAULT_USER_AGENT = "OSRS-GE-PriceTool/1.2 (+https://github.com/Cartavius/OSRS-GE-PriceTool)"
+ALLOWED_ENDPOINTS = {"mapping", "latest", "volumes", "5m", "1h"}
+
+INDEX_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OSRS GE + High Alch Price Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>OSRS Grand Exchange + High Alchemy Tool</h1>
+      <p>
+        Live prices from the OSRS Wiki real-time prices API, combined with item mapping data for
+        High Alchemy, Low Alchemy, and shop values.
+      </p>
+    </header>
+
+    <section class="controls" aria-label="Filters and controls">
+      <label>
+        Search item
+        <input id="searchInput" type="search" placeholder="Rune scimitar, Shark, Nature rune..." />
+      </label>
+
+      <label>
+        Members
+        <select id="memberFilter">
+          <option value="all">All items</option>
+          <option value="members">Members only</option>
+          <option value="f2p">Free-to-play only</option>
+        </select>
+      </label>
+
+      <label>
+        Favorites
+        <select id="favoritesFilter">
+          <option value="all">All items</option>
+          <option value="favorites">Favorites only</option>
+        </select>
+      </label>
+
+      <label>
+        Min buy (high)
+        <input id="minPriceInput" type="number" min="0" step="1" placeholder="0" />
+      </label>
+
+      <label>
+        Max buy (high)
+        <input id="maxPriceInput" type="number" min="0" step="1" placeholder="Any" />
+      </label>
+
+      <label>
+        Min alch profit
+        <input id="minProfitInput" type="number" step="1" placeholder="0" />
+      </label>
+
+      <label>
+        Volume window
+        <select id="volumeWindowSelect">
+          <option value="5m">5m</option>
+          <option value="1h">1h</option>
+          <option value="24h" selected>24h</option>
+        </select>
+      </label>
+
+      <label id="minVolumeLabel">
+        Min trade volume (24h)
+        <input id="minVolumeInput" type="number" min="0" step="1" placeholder="0" />
+      </label>
+
+      <details class="column-picker">
+        <summary>Show / hide columns</summary>
+        <div id="columnOptions" class="column-options"></div>
+      </details>
+
+      <button id="refreshBtn" type="button">Refresh data</button>
+      <button id="resetBtn" type="button" class="secondary">Reset filters</button>
+    </section>
+
+    <section class="stats" aria-live="polite">
+      <span id="status">Loading data...</span>
+      <span id="count"></span>
+      <span id="updated"></span>
+      <span id="natureRunePrice"></span>
+    </section>
+
+    <section class="pagination-controls" aria-label="Pagination controls">
+      <label>
+        Items per page
+        <select id="pageSizeSelect">
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="250">250</option>
+        </select>
+      </label>
+      <button id="prevPageBtn" type="button" class="secondary">Previous</button>
+      <span id="pageInfo">Page 1 / 1</span>
+      <button id="nextPageBtn" type="button" class="secondary">Next</button>
+    </section>
+
+    <div class="table-wrap">
+      <table id="itemsTable">
+        <thead>
+          <tr>
+            <th data-key="name">Item</th>
+            <th data-key="high">Buy (high)</th>
+            <th data-key="low">Sell (low)</th>
+            <th data-key="spread">Spread</th>
+            <th data-key="highalch">High Alch</th>
+            <th data-key="lowalch">Low Alch</th>
+            <th data-key="value">Store Value</th>
+            <th data-key="volume" id="volumeHeader">Trade Volume (24h)</th>
+            <th data-key="buyLimit">GE Buy Limit</th>
+            <th data-key="alchProfit">Alch Profit*</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+
+    <footer>
+      <small>
+        *Alch Profit = High Alch - Buy (high) - Nature rune price (auto-fetched from GE).
+      </small>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
+"""
+STYLES_CSS = """:root {
+  color-scheme: light dark;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #111827;
+  color: #e5e7eb;
+}
+
+.container {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+header h1 {
+  margin: 0;
+}
+
+header p {
+  color: #cbd5e1;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+input,
+select,
+button {
+  border-radius: 0.5rem;
+  border: 1px solid #374151;
+  background: #1f2937;
+  color: #f9fafb;
+  padding: 0.55rem 0.65rem;
+}
+
+button {
+  cursor: pointer;
+  font-weight: 700;
+  margin-top: auto;
+}
+
+button:hover {
+  background: #374151;
+}
+
+button.secondary {
+  background: #0f172a;
+}
+
+.column-picker {
+  border: 1px solid #374151;
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  background: #0f172a;
+}
+
+.column-picker summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.column-options {
+  margin-top: 0.65rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.column-options label {
+  flex-direction: row;
+  align-items: center;
+  font-weight: 500;
+}
+
+.column-options input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+  color: #cbd5e1;
+}
+
+.pagination-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+#pageInfo {
+  color: #cbd5e1;
+  min-width: 8.5rem;
+  text-align: center;
+}
+
+.table-wrap {
+  overflow: auto;
+  border: 1px solid #374151;
+  border-radius: 0.75rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.6rem;
+  border-bottom: 1px solid #374151;
+  white-space: nowrap;
+  text-align: right;
+}
+
+th:first-child,
+td:first-child {
+  text-align: left;
+}
+
+.item-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.favorite-toggle {
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  margin: 0;
+  cursor: pointer;
+}
+
+.favorite-toggle:hover {
+  color: #fbbf24;
+  background: transparent;
+}
+
+.favorite-toggle.active {
+  color: #f59e0b;
+}
+
+.item-icon,
+.item-icon-placeholder {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+}
+
+.item-icon-placeholder {
+  display: inline-block;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #0b1220;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hidden-column {
+  display: none;
+}
+
+tbody tr:hover {
+  background: #1e293b;
+}
+
+.pos { color: #4ade80; }
+.neg { color: #f87171; }
+
+footer {
+  margin-top: 0.75rem;
+  color: #94a3b8;
+}
+"""
+APP_JS = """const API_BASE_CANDIDATES = [
   '/api/v1/osrs',
   'https://prices.runescape.wiki/api/v1/osrs',
 ];
@@ -40,7 +386,6 @@ const state = {
   sortDirection: 'desc',
   latestTimestamp: null,
   natureRunePrice: null,
-  iconCacheBust: null,
   volumeWindow: '24h',
   favoritesFilter: 'all',
   favorites: new Set(),
@@ -78,31 +423,18 @@ const el = {
 const fmtNumber = new Intl.NumberFormat();
 
 function formatCoins(value) {
-  if (value === null || value === undefined) return '—';
+  if (value === null || value === undefined) return 'â€”';
   return `${fmtNumber.format(value)} gp`;
 }
 
 function formatVolume(value) {
-  if (value === null || value === undefined) return '—';
+  if (value === null || value === undefined) return 'â€”';
   return fmtNumber.format(value);
 }
 
-function getDirectIconUrl(iconName, cacheBust = null) {
+function getIconUrl(iconName) {
   if (!iconName) return null;
-  const base = `https://oldschool.runescape.wiki/w/Special:FilePath/${encodeURIComponent(iconName)}`;
-  return cacheBust ? `${base}?v=${cacheBust}` : base;
-}
-
-function getIconUrl(iconName, itemId, cacheBust = null) {
-  if (!iconName) return null;
-  if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-    const params = new URLSearchParams({ name: iconName });
-    if (cacheBust) {
-      params.set('v', String(cacheBust));
-    }
-    return `/icon?${params.toString()}`;
-  }
-  return getDirectIconUrl(iconName, cacheBust);
+  return `https://oldschool.runescape.wiki/w/Special:FilePath/${encodeURIComponent(iconName)}`;
 }
 
 function formatBuyLimit(value) {
@@ -279,7 +611,7 @@ function renderTable() {
     favoriteBtn.className = `favorite-toggle${favorite ? ' active' : ''}`;
     favoriteBtn.setAttribute('aria-label', favorite ? `Remove ${item.name} from favorites` : `Add ${item.name} to favorites`);
     favoriteBtn.setAttribute('aria-pressed', favorite ? 'true' : 'false');
-    favoriteBtn.textContent = favorite ? '★' : '☆';
+    favoriteBtn.textContent = favorite ? 'â˜…' : 'â˜†';
     favoriteBtn.addEventListener('click', () => {
       toggleFavorite(item.id);
       applyFilters({ resetPage: false });
@@ -295,11 +627,6 @@ function renderTable() {
       icon.decoding = 'async';
       icon.width = 24;
       icon.height = 24;
-      icon.addEventListener('error', () => {
-        const fallbackUrl = getDirectIconUrl(item.icon, state.iconCacheBust);
-        if (!fallbackUrl || icon.src === fallbackUrl) return;
-        icon.src = fallbackUrl;
-      });
       itemCell.appendChild(icon);
     } else {
       const iconPlaceholder = document.createElement('span');
@@ -472,7 +799,7 @@ function mergeData(mapping, latest, volumes, prices5m, prices1h) {
         id: item.id,
         name: item.name,
         icon: item.icon ?? null,
-        iconUrl: getIconUrl(item.icon, item.id, state.iconCacheBust),
+        iconUrl: getIconUrl(item.icon),
         members: Boolean(item.members),
         high,
         low,
@@ -522,9 +849,6 @@ function renderNatureRuneStatus() {
 async function loadData({ forceRefresh = false } = {}) {
   el.status.textContent = forceRefresh ? 'Refreshing API data...' : 'Loading API data...';
   el.refresh.disabled = true;
-  if (forceRefresh) {
-    state.iconCacheBust = Date.now();
-  }
 
   try {
     const [mapping, latest, volumes, prices5m, prices1h] = await Promise.all([
@@ -665,3 +989,140 @@ updateVolumeUiLabels();
 setupEvents();
 loadData();
 
+"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    user_agent = DEFAULT_USER_AGENT
+
+    @staticmethod
+    def _is_client_disconnect(error):
+        return isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError))
+
+    def _send_common_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "img-src 'self' https://oldschool.runescape.wiki data:; "
+            "connect-src 'self' https://prices.runescape.wiki; "
+            "object-src 'none'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'",
+        )
+
+    def _send_text(self, status, content_type, text, cache_control="no-store"):
+        body = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("Content-Length", str(len(body)))
+        self._send_common_headers()
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError as write_error:
+            if not self._is_client_disconnect(write_error):
+                raise
+
+    def _send_bytes(self, status, content_type, body, cache_control="no-store"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("Content-Length", str(len(body)))
+        self._send_common_headers()
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError as write_error:
+            if not self._is_client_disconnect(write_error):
+                raise
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path in ("/", "/index.html"):
+            self._send_text(200, "text/html", INDEX_HTML, cache_control="no-cache")
+            return
+
+        if path == "/styles.css":
+            self._send_text(200, "text/css", STYLES_CSS)
+            return
+
+        if path == "/app.js":
+            self._send_text(200, "application/javascript", APP_JS)
+            return
+
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self._send_common_headers()
+            self.end_headers()
+            return
+
+        if path.startswith("/api/v1/osrs/"):
+            self.proxy_api(path)
+            return
+
+        self._send_text(404, "text/plain", "Not found")
+
+    def proxy_api(self, path):
+        endpoint = path[len("/api/v1/osrs/") :]
+        if not endpoint or endpoint not in ALLOWED_ENDPOINTS:
+            self._send_text(400, "application/json", json.dumps({"error": "Invalid API endpoint"}))
+            return
+
+        upstream_url = f"{UPSTREAM_BASE}/{endpoint}"
+        request = Request(
+            upstream_url,
+            headers={
+                "User-Agent": self.user_agent,
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+
+        try:
+            with urlopen(request, timeout=20) as response:
+                body = response.read()
+                status = response.getcode()
+                content_type = response.headers.get("Content-Type", "application/json")
+        except HTTPError as error:
+            body = error.read() if hasattr(error, "read") else b""
+            status = error.code
+            content_type = error.headers.get("Content-Type", "application/json") if error.headers else "application/json"
+        except URLError as error:
+            payload = {"error": "Upstream request failed", "details": str(error)}
+            self._send_text(502, "application/json", json.dumps(payload))
+            return
+
+        self._send_bytes(status, content_type, body)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run OSRS GE tool as a single-file local app.")
+    parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
+    parser.add_argument("--port", default=8080, type=int, help="Port number")
+    parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="User-Agent sent to OSRS Wiki API")
+    parser.add_argument("--no-browser", action="store_true", help="Do not auto-open the browser")
+    args = parser.parse_args()
+
+    Handler.user_agent = args.user_agent
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    url = f"http://{args.host}:{args.port}"
+
+    print(f"Serving on {url}")
+    print(f"Proxying /api/v1/osrs/* to {UPSTREAM_BASE}")
+    print(f"Using User-Agent: {Handler.user_agent}")
+
+    if not args.no_browser:
+        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

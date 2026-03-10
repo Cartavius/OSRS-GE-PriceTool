@@ -15,6 +15,16 @@ python3 server.py --port 8080 --user-agent "OSRS-GE-PriceTool/1.2 (+https://gith
 
 Open: <http://localhost:8080>
 
+## One-File Run
+
+Use the self-contained launcher:
+
+```bash
+python3 osrs_ge_tool.py
+```
+
+It serves the app, proxies API requests with the configured `User-Agent`, and opens the browser automatically.
+
 ## Features
 
 - Live GE data via OSRS Wiki prices API.

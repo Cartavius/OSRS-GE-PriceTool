@@ -1,0 +1,13 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "user_agent": "OSRS-GE-PriceTool/1.2 (+https://github.com/Cartavius/OSRS-GE-PriceTool)",
+  "mirror_icons": true,
+  "icon_cache_dir": ".icon-cache",
+  "icon_cache_ttl_hours": 168,
+  "icon_rate_limit_count": 200,
+  "icon_rate_limit_window_seconds": 600,
+  "prefetch_icons": false,
+  "prefetch_force": false,
+  "icon_debug": false
+}
