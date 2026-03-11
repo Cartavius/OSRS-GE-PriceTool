@@ -1,104 +1,108 @@
 # OSRS GE Price Tool
 
-Web app for browsing Old School RuneScape Grand Exchange data with filters, sorting, and High Alchemy profit calculations.
+A lightweight Old School RuneScape Grand Exchange browser with filtering, sorting, favorites, High Alchemy profit calculations, and optional local icon mirroring.
+
+## Features
+
+- Live OSRS Wiki price and mapping data
+- Sortable and filterable table
+- Favorites stored in browser `localStorage`
+- High Alch profit calculation using current nature rune price
+- Selectable trade volume windows: `5m`, `1h`, `24h`
+- Local API proxy with configurable `User-Agent`
+- Optional icon mirroring with cache, rate limiting, and staged background refresh
+- Docker and non-Docker deployment paths
 
 ## Requirements
 
-- Python 3.10+
+- Python `3.10+` for direct local runs
+- Docker Desktop / Docker Engine for containerized runs
 - Modern browser
 
-## Quick Start
+## Running Locally
+
+Default local server:
 
 ```bash
 python3 server.py
 ```
 
-Open: <http://localhost:8080>
+Open `http://localhost:8080`.
 
-## Configuration
-
-`server.py` loads defaults from `server.config.json` (if present).
-
-- Precedence: `CLI args > server.config.json > built-in defaults`
-- Default config path can be overridden with:
-
-```bash
-python3 server.py --config my-config.json
-```
-
-Example one-off override:
-
-```bash
-python3 server.py --port 9090 --no-icon-debug
-```
-
-## One-File Run
-
-Use the self-contained launcher:
+Self-contained single-file launcher:
 
 ```bash
 python3 osrs_ge_tool.py
 ```
 
-It serves the app, proxies API requests with the configured `User-Agent`, and opens the browser automatically.
+## Running With Docker
 
-## Docker
+Preferred:
 
-Build and run with Docker:
+```bash
+docker compose up --build
+```
+
+Manual image run:
 
 ```bash
 docker build -t osrs-ge-tool .
 docker run --rm -p 8080:8080 -v ${PWD}/.icon-cache:/app/.icon-cache osrs-ge-tool
 ```
 
-Using Docker Compose:
+The container exposes the app on `http://localhost:8080` and persists mirrored icons through `./.icon-cache`.
+
+## Configuration
+
+`server.py` loads defaults from `server.config.json` when present.
+
+Precedence:
+- `CLI arguments`
+- `server.config.json`
+- built-in defaults
+
+Use a different config file:
 
 ```bash
-docker compose up --build
+python3 server.py --config my-config.json
 ```
 
-Notes:
+Override a configured default for a single run:
 
-- App is available at `http://localhost:8080`.
-- Container runs `server.py` with `--host 0.0.0.0`.
-- `server.config.json` is mounted read-only into the container and used for defaults.
-- `.icon-cache` is mounted so mirrored icons persist between container restarts.
+```bash
+python3 server.py --port 9090 --no-icon-debug
+```
 
-## Features
+Useful runtime endpoint:
 
-- Live GE data via OSRS Wiki prices API.
-- Sortable, filterable table with pagination.
-- High Alch profit calculation:
-  - `high_alch - buy_high - nature_rune_price`
-- Selectable volume window (`5m`, `1h`, `24h`).
-- Favorites list with persistent local storage.
-- Column show/hide picker.
-- Local API proxy with custom `User-Agent`.
-- Client-side caching to reduce repeat API requests.
-- Icon cache/mirroring with staged background refresh.
-- Rate-limit-aware icon fetching (budgeted window).
-- Icon stats endpoint at `/icon/stats`.
+- `http://localhost:8080/icon/stats` for icon cache, refresh queue, and rate-limit status
 
-## Data Source
+## Deployment Notes
 
-- OSRS Wiki Real-time Prices API: <https://oldschool.runescape.wiki/w/RuneScape:Real-time_Prices>
+- `server.config.json` is the right place for long-lived behavior like icon mirroring, TTL, and rate-limit settings.
+- Docker is the best default for homelab or VM deployment.
+- The current Docker setup mounts `server.config.json` read-only and persists icon cache on disk.
 
-## Project Structure
+## Project Files
 
-- `Index.html`: UI layout
-- `Styles.css`: styles
-- `app.js`: client logic and rendering
-- `server.py`: local static server + API proxy
-- `server.config.json`: runtime defaults for local server behavior
-- `osrs_ge_tool.py`: single-file launcher with embedded frontend assets
+- `Index.html`: UI markup
+- `Styles.css`: frontend styles
+- `app.js`: frontend behavior and rendering
+- `server.py`: local HTTP server, API proxy, icon cache/mirroring logic
+- `server.config.json`: default runtime settings
+- `Dockerfile`: container image definition
+- `docker-compose.yml`: local container orchestration
+- `osrs_ge_tool.py`: single-file packaged launcher
 
 ## Notes
 
 - `Reset filters` does not clear favorites.
-- Profit does not include GE tax or rune setup variations.
+- Profit does not include GE tax, staff setup, or other rune-cost variants.
+- Data source: OSRS Wiki Real-time Prices API  
+  <https://oldschool.runescape.wiki/w/RuneScape:Real-time_Prices>
 
 ## Troubleshooting
 
 - If the UI cannot load data, verify `/api/v1/osrs/*` requests in browser DevTools.
-- If running from file directly fails due request restrictions, run through `server.py` and use `http://localhost:8080`.
-- Check icon mirror health and rate-limit usage at `http://localhost:8080/icon/stats`.
+- If icons are missing, check `/icon/stats` and verify the cache/rate-limit settings in `server.config.json`.
+- If opening the HTML file directly from disk fails, run through `server.py` or Docker instead.
