@@ -59,6 +59,7 @@ class Handler(SimpleHTTPRequestHandler):
         "refresh_worker_updates": 0,
         "refresh_worker_failures": 0,
     }
+    index_pages = ["Index.html", "index.html"]
 
     @staticmethod
     def _is_client_disconnect(error):

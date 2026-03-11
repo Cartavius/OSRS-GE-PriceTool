@@ -42,6 +42,28 @@ python3 osrs_ge_tool.py
 
 It serves the app, proxies API requests with the configured `User-Agent`, and opens the browser automatically.
 
+## Docker
+
+Build and run with Docker:
+
+```bash
+docker build -t osrs-ge-tool .
+docker run --rm -p 8080:8080 -v ${PWD}/.icon-cache:/app/.icon-cache osrs-ge-tool
+```
+
+Using Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+Notes:
+
+- App is available at `http://localhost:8080`.
+- Container runs `server.py` with `--host 0.0.0.0`.
+- `server.config.json` is mounted read-only into the container and used for defaults.
+- `.icon-cache` is mounted so mirrored icons persist between container restarts.
+
 ## Features
 
 - Live GE data via OSRS Wiki prices API.

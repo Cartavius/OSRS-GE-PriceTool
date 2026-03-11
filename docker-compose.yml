@@ -1,0 +1,10 @@
+services:
+  osrs-ge-tool:
+    build: .
+    container_name: osrs-ge-tool
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./.icon-cache:/app/.icon-cache
+      - ./server.config.json:/app/server.config.json:ro
+    command: ["python", "server.py", "--host", "0.0.0.0", "--config", "server.config.json"]

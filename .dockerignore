@@ -1,0 +1,6 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+.icon-cache/
+osrs_ge_tool.py
