@@ -4,10 +4,13 @@
   "user_agent": "OSRS-GE-PriceTool/1.2 (+https://github.com/Cartavius/OSRS-GE-PriceTool)",
   "mirror_icons": true,
   "icon_cache_dir": ".icon-cache",
-  "icon_cache_ttl_hours": 168,
+  "icon_cache_ttl_hours": 0,
   "icon_rate_limit_count": 200,
   "icon_rate_limit_window_seconds": 600,
   "prefetch_icons": false,
   "prefetch_force": false,
-  "icon_debug": false
+  "icon_debug": false,
+  "history_tracking": true,
+  "history_db_path": ".price-history/osrs-ge-history.sqlite3",
+  "history_poll_interval_seconds": 300
 }

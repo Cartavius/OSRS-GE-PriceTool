@@ -2,6 +2,7 @@
 import argparse
 import json
 import hashlib
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -20,14 +21,17 @@ DEFAULT_SETTINGS = {
     "host": "127.0.0.1",
     "port": 8080,
     "user_agent": DEFAULT_USER_AGENT,
-    "mirror_icons": False,
+    "mirror_icons": True,
     "icon_cache_dir": ".icon-cache",
-    "icon_cache_ttl_hours": 168,
+    "icon_cache_ttl_hours": 0,
     "icon_rate_limit_count": 200,
     "icon_rate_limit_window_seconds": 600,
     "prefetch_icons": False,
     "prefetch_force": False,
     "icon_debug": False,
+    "history_tracking": True,
+    "history_db_path": ".price-history/osrs-ge-history.sqlite3",
+    "history_poll_interval_seconds": 300,
 }
 
 
@@ -59,6 +63,11 @@ class Handler(SimpleHTTPRequestHandler):
         "refresh_worker_updates": 0,
         "refresh_worker_failures": 0,
     }
+    history_tracking = True
+    history_db_path = Path(".price-history/osrs-ge-history.sqlite3")
+    history_poll_interval_seconds = 5 * 60
+    history_db_lock = threading.Lock()
+    history_worker_started = False
     index_pages = ["Index.html", "index.html"]
 
     @staticmethod
@@ -166,6 +175,159 @@ class Handler(SimpleHTTPRequestHandler):
         return cls.icon_cache_dir / f"{key}.bin", cls.icon_cache_dir / f"{key}.json"
 
     @classmethod
+    def _open_history_db(cls):
+        cls.history_db_path.parent.mkdir(parents=True, exist_ok=True)
+        return sqlite3.connect(cls.history_db_path, timeout=30, check_same_thread=False)
+
+    @classmethod
+    def init_history_db(cls):
+        with cls.history_db_lock:
+            with cls._open_history_db() as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        item_id INTEGER NOT NULL,
+                        ts INTEGER NOT NULL,
+                        high INTEGER,
+                        low INTEGER,
+                        volume_24h INTEGER,
+                        PRIMARY KEY (item_id, ts)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_price_history_item_ts ON price_history (item_id, ts DESC)"
+                )
+                connection.commit()
+
+    @classmethod
+    def ensure_history_worker(cls):
+        if not cls.history_tracking:
+            return
+        cls.init_history_db()
+        with cls.history_db_lock:
+            if cls.history_worker_started:
+                return
+            cls.history_worker_started = True
+        thread = threading.Thread(target=cls.history_worker_loop, name="history-worker", daemon=True)
+        thread.start()
+        print("[history] background tracker started")
+
+    @classmethod
+    def history_worker_loop(cls):
+        while True:
+            try:
+                cls.capture_market_snapshot()
+            except (HTTPError, URLError, OSError, ValueError, sqlite3.DatabaseError) as error:
+                print(f"[history] snapshot failed: {error}")
+            time.sleep(max(60, cls.history_poll_interval_seconds))
+
+    @classmethod
+    def fetch_upstream_json(cls, endpoint, timeout=30):
+        request = Request(
+            f"{UPSTREAM_BASE}/{endpoint}",
+            headers={
+                "User-Agent": cls.user_agent,
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def extract_latest_timestamp(payload):
+        if isinstance(payload, dict) and isinstance(payload.get("timestamp"), int):
+            return payload["timestamp"]
+
+        price_entries = payload.get("data", {}) if isinstance(payload, dict) else {}
+        max_timestamp = None
+        for entry in price_entries.values():
+            if not isinstance(entry, dict):
+                continue
+            high_time = entry.get("highTime") if isinstance(entry.get("highTime"), int) else None
+            low_time = entry.get("lowTime") if isinstance(entry.get("lowTime"), int) else None
+            candidate = max(high_time or 0, low_time or 0)
+            if candidate > 0 and (max_timestamp is None or candidate > max_timestamp):
+                max_timestamp = candidate
+        return max_timestamp
+
+    @classmethod
+    def capture_market_snapshot(cls):
+        latest = cls.fetch_upstream_json("latest")
+        volumes = cls.fetch_upstream_json("volumes")
+        snapshot_ts = cls.extract_latest_timestamp(latest) or int(time.time())
+        latest_data = latest.get("data", {}) if isinstance(latest, dict) else {}
+        volume_data = volumes.get("data", {}) if isinstance(volumes, dict) else {}
+
+        rows = []
+        for raw_item_id, price in latest_data.items():
+            try:
+                item_id = int(raw_item_id)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(price, dict):
+                continue
+            high = price.get("high") if isinstance(price.get("high"), int) else None
+            low = price.get("low") if isinstance(price.get("low"), int) else None
+            volume_entry = volume_data.get(raw_item_id, volume_data.get(item_id))
+            if isinstance(volume_entry, dict):
+                volume_24h = volume_entry.get("high")
+                if not isinstance(volume_24h, int):
+                    volume_24h = volume_entry.get("low") if isinstance(volume_entry.get("low"), int) else None
+            elif isinstance(volume_entry, int):
+                volume_24h = volume_entry
+            else:
+                volume_24h = None
+            rows.append((item_id, snapshot_ts, high, low, volume_24h))
+
+        if not rows:
+            return
+
+        with cls.history_db_lock:
+            with cls._open_history_db() as connection:
+                connection.executemany(
+                    """
+                    INSERT INTO price_history (item_id, ts, high, low, volume_24h)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(item_id, ts) DO UPDATE SET
+                        high=excluded.high,
+                        low=excluded.low,
+                        volume_24h=excluded.volume_24h
+                    """,
+                    rows,
+                )
+                connection.commit()
+        print(f"[history] snapshot stored for {len(rows)} items at {snapshot_ts}")
+
+    @classmethod
+    def load_item_history(cls, item_id, limit):
+        cls.init_history_db()
+        with cls.history_db_lock:
+            with cls._open_history_db() as connection:
+                cursor = connection.execute(
+                    """
+                    SELECT ts, high, low, volume_24h
+                    FROM price_history
+                    WHERE item_id = ?
+                    ORDER BY ts DESC
+                    LIMIT ?
+                    """,
+                    (item_id, limit),
+                )
+                rows = cursor.fetchall()
+        rows.reverse()
+        return [
+            {
+                "ts": row[0] * 1000,
+                "high": row[1],
+                "low": row[2],
+                "volume": row[3],
+            }
+            for row in rows
+        ]
+
+    @classmethod
     def _load_cached_icon(cls, icon_name):
         body_path, meta_path = cls._icon_cache_paths(icon_name)
         if not body_path.exists() or not meta_path.exists():
@@ -179,7 +341,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return None, False
 
-        is_fresh = (time.time() - fetched_at) < cls.icon_cache_ttl_seconds
+        is_fresh = cls.icon_cache_ttl_seconds <= 0 or (time.time() - fetched_at) < cls.icon_cache_ttl_seconds
         return (body, content_type), is_fresh
 
     @classmethod
@@ -262,6 +424,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/icon/stats":
             self.send_icon_stats()
+            return
+        if parsed.path == "/history":
+            self.send_history(parsed.query)
             return
         if parsed.path == "/icon":
             self.proxy_icon(parsed.query)
@@ -442,6 +607,49 @@ class Handler(SimpleHTTPRequestHandler):
             if not self._is_client_disconnect(write_error):
                 raise
 
+    def send_history(self, query):
+        params = parse_qs(query)
+        item_id_value = params.get("id", [None])[0]
+        limit_value = params.get("limit", [1000])[0]
+
+        try:
+            item_id = coerce_int(item_id_value, "id")
+            limit = coerce_int(limit_value, "limit")
+        except ValueError as error:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            try:
+                self.wfile.write(json.dumps({"error": str(error)}).encode("utf-8"))
+            except OSError as write_error:
+                if not self._is_client_disconnect(write_error):
+                    raise
+            return
+
+        try:
+            entries = self.load_item_history(item_id, min(limit, 5000))
+        except sqlite3.DatabaseError as error:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            try:
+                self.wfile.write(json.dumps({"error": "History database unavailable", "details": str(error)}).encode("utf-8"))
+            except OSError as write_error:
+                if not self._is_client_disconnect(write_error):
+                    raise
+            return
+
+        body = json.dumps({"item_id": item_id, "entries": entries}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError as write_error:
+            if not self._is_client_disconnect(write_error):
+                raise
+
 
 def fetch_mapping_icon_names(user_agent):
     request = Request(
@@ -525,7 +733,7 @@ def main():
         help="Enable/disable local icon mirroring",
     )
     parser.add_argument("--icon-cache-dir", default=None, help="Directory for mirrored icon cache")
-    parser.add_argument("--icon-cache-ttl-hours", default=None, type=int, help="Max icon cache age before refresh")
+    parser.add_argument("--icon-cache-ttl-hours", default=None, type=int, help="Max icon cache age before refresh (0 = never refresh)")
     parser.add_argument("--icon-rate-limit-count", default=None, type=int, help="Max icon fetches per rate-limit window")
     parser.add_argument("--icon-rate-limit-window-seconds", default=None, type=int, help="Rate-limit window in seconds")
     parser.add_argument(
@@ -549,6 +757,20 @@ def main():
         default=None,
         help="Enable/disable verbose icon cache/fetch logging",
     )
+    parser.add_argument(
+        "--history-tracking",
+        dest="history_tracking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable background market history tracking",
+    )
+    parser.add_argument("--history-db-path", default=None, help="SQLite file path for stored market history")
+    parser.add_argument(
+        "--history-poll-interval-seconds",
+        default=None,
+        type=int,
+        help="Background market snapshot interval in seconds",
+    )
     args = parser.parse_args()
 
     config_data, config_loaded = load_config(args.config)
@@ -559,7 +781,7 @@ def main():
     resolved_mirror_icons = coerce_bool(resolve_setting(args.mirror_icons, config_data, "mirror_icons"), "mirror_icons")
     resolved_icon_cache_dir = resolve_setting(args.icon_cache_dir, config_data, "icon_cache_dir")
     resolved_ttl_hours = coerce_int(
-        resolve_setting(args.icon_cache_ttl_hours, config_data, "icon_cache_ttl_hours"), "icon_cache_ttl_hours"
+        resolve_setting(args.icon_cache_ttl_hours, config_data, "icon_cache_ttl_hours"), "icon_cache_ttl_hours", minimum=0
     )
     resolved_rate_limit_count = coerce_int(
         resolve_setting(args.icon_rate_limit_count, config_data, "icon_rate_limit_count"), "icon_rate_limit_count"
@@ -571,6 +793,15 @@ def main():
     resolved_prefetch_icons = coerce_bool(resolve_setting(args.prefetch_icons, config_data, "prefetch_icons"), "prefetch_icons")
     resolved_prefetch_force = coerce_bool(resolve_setting(args.prefetch_force, config_data, "prefetch_force"), "prefetch_force")
     resolved_icon_debug = coerce_bool(resolve_setting(args.icon_debug, config_data, "icon_debug"), "icon_debug")
+    resolved_history_tracking = coerce_bool(
+        resolve_setting(args.history_tracking, config_data, "history_tracking"), "history_tracking"
+    )
+    resolved_history_db_path = resolve_setting(args.history_db_path, config_data, "history_db_path")
+    resolved_history_poll_interval = coerce_int(
+        resolve_setting(args.history_poll_interval_seconds, config_data, "history_poll_interval_seconds"),
+        "history_poll_interval_seconds",
+        minimum=60,
+    )
 
     Handler.user_agent = resolved_user_agent
     Handler.mirror_icons = resolved_mirror_icons
@@ -579,11 +810,16 @@ def main():
     Handler.icon_debug = resolved_icon_debug
     Handler.icon_rate_limit_count = resolved_rate_limit_count
     Handler.icon_rate_limit_window_seconds = resolved_rate_limit_window
+    Handler.history_tracking = resolved_history_tracking
+    Handler.history_db_path = Path(resolved_history_db_path)
+    Handler.history_poll_interval_seconds = resolved_history_poll_interval
     if resolved_prefetch_icons and not Handler.mirror_icons:
         Handler.mirror_icons = True
         print("[icon] --prefetch-icons requested, enabling --mirror-icons automatically")
     if Handler.mirror_icons:
         Handler.ensure_icon_refresh_worker()
+    if Handler.history_tracking:
+        Handler.ensure_history_worker()
 
     if resolved_prefetch_icons:
         try:
@@ -598,11 +834,16 @@ def main():
     print(f"Using User-Agent: {Handler.user_agent}")
     print(f"Config file: {args.config} ({'loaded' if config_loaded else 'not found, using built-in defaults'})")
     print(f"Icon route: /icon?name=<icon>")
+    print("History route: /history?id=<item_id>&limit=<rows>")
     print(
         f"Icon mirroring: {'enabled' if Handler.mirror_icons else 'disabled'} "
-        f"(dir={Handler.icon_cache_dir}, ttl={resolved_ttl_hours}h)"
+        f"(dir={Handler.icon_cache_dir}, ttl={'never' if resolved_ttl_hours == 0 else f'{resolved_ttl_hours}h'})"
     )
     print(f"Icon rate-limit budget: {Handler.icon_rate_limit_count}/{Handler.icon_rate_limit_window_seconds}s")
+    print(
+        f"History tracking: {'enabled' if Handler.history_tracking else 'disabled'} "
+        f"(db={Handler.history_db_path}, poll={Handler.history_poll_interval_seconds}s)"
+    )
     server.serve_forever()
 
 

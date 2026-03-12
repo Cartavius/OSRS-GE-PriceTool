@@ -18,6 +18,18 @@
 
     <section class="controls" aria-label="Filters and controls">
       <label>
+        Presets
+        <select id="presetSelect">
+          <option value="">Custom view</option>
+        </select>
+      </label>
+
+      <div class="button-group">
+        <button id="savePresetBtn" type="button">Save preset</button>
+        <button id="deletePresetBtn" type="button" class="secondary">Delete preset</button>
+      </div>
+
+      <label>
         Search item
         <input id="searchInput" type="search" placeholder="Rune scimitar, Shark, Nature rune..." />
       </label>
@@ -68,6 +80,16 @@
         <input id="minVolumeInput" type="number" min="0" step="1" placeholder="0" />
       </label>
 
+      <label class="inline-toggle">
+        <span>Apply GE tax</span>
+        <input id="applyTaxInput" type="checkbox" checked />
+      </label>
+
+      <label>
+        GE tax rate
+        <input id="taxRateInput" type="number" min="0" max="20" step="0.1" value="2" />
+      </label>
+
       <details class="column-picker">
         <summary>Show / hide columns</summary>
         <div id="columnOptions" class="column-options"></div>
@@ -112,6 +134,7 @@
             <th data-key="value">Store Value</th>
             <th data-key="volume" id="volumeHeader">Trade Volume (24h)</th>
             <th data-key="buyLimit">GE Buy Limit</th>
+            <th data-key="flipProfit">Flip Profit</th>
             <th data-key="alchProfit">Alch Profit*</th>
           </tr>
         </thead>
@@ -119,9 +142,75 @@
       </table>
     </div>
 
+    <section id="detailPanel" class="detail-modal hidden" aria-live="polite" aria-modal="true" role="dialog" aria-labelledby="detailTitle">
+      <div id="detailBackdrop" class="detail-backdrop"></div>
+      <div class="detail-panel">
+        <div class="detail-panel-header">
+          <div>
+            <h2 id="detailTitle">Item details</h2>
+            <p id="detailSubtitle">Select an item to inspect pricing, liquidity, and recent local snapshots.</p>
+          </div>
+          <button id="closeDetailBtn" type="button" class="secondary">Close</button>
+        </div>
+
+        <div class="detail-meta">
+          <img id="detailIcon" class="detail-icon hidden" alt="" width="40" height="40" />
+          <div id="detailTags" class="detail-tags"></div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="detail-card">
+            <h3>Market</h3>
+            <dl id="detailMarketStats" class="detail-stats"></dl>
+          </div>
+          <div class="detail-card">
+            <h3>Profitability</h3>
+            <dl id="detailProfitStats" class="detail-stats"></dl>
+          </div>
+        </div>
+
+        <div class="detail-card">
+          <div class="detail-card-header">
+            <div>
+              <h3>Local price history</h3>
+              <span id="detailHistoryStatus" class="muted"></span>
+            </div>
+            <div class="chart-toolbar">
+              <label class="chart-range-control">
+                <span>Range</span>
+                <select id="detailChartRange">
+                  <option value="24h">24h</option>
+                  <option value="7d">7d</option>
+                  <option value="30d" selected>30d</option>
+                  <option value="90d">90d</option>
+                  <option value="1y">1y</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+              <label class="chart-range-control">
+                <span>Mode</span>
+                <select id="detailChartMode">
+                  <option value="line" selected>Lines</option>
+                  <option value="candles">Derived candles</option>
+                </select>
+              </label>
+              <label class="chart-toggle">
+                <input id="detailChartVolume" type="checkbox" checked />
+                <span>Volume</span>
+              </label>
+            </div>
+          </div>
+          <div id="detailChartReadout" class="detail-chart-readout muted">Hover the chart to inspect exact values.</div>
+          <div id="detailChartEmpty" class="detail-empty">No local history yet. Use Refresh over time to build snapshots.</div>
+          <svg id="detailChart" class="detail-chart hidden" viewBox="0 0 640 260" preserveAspectRatio="none" aria-label="Local price history chart"></svg>
+          <div id="detailChartLegend" class="detail-chart-legend" aria-hidden="true"></div>
+        </div>
+      </div>
+    </section>
+
     <footer>
       <small>
-        *Alch Profit = High Alch - Buy (high) - Nature rune price (auto-fetched from GE).
+        *Alch Profit = High Alch - Buy (high) - Nature rune price (auto-fetched from GE). Flip Profit uses the current GE tax setting.
       </small>
     </footer>
   </main>
