@@ -6,17 +6,13 @@ const NATURE_RUNE_ITEM_ID = 561;
 const CACHE_KEY_PREFIX = 'osrs_ge_cache_v1';
 const FAVORITES_KEY = 'osrs_ge_favorites_v1';
 const PRESETS_KEY = 'osrs_ge_presets_v1';
+const AUTO_REFRESH_MS = 60 * 1000;
 const CACHE_TTL_MS = {
   mapping: 24 * 60 * 60 * 1000,
   latest: 60 * 1000,
   volumes: 60 * 1000,
   '5m': 60 * 1000,
   '1h': 60 * 1000,
-};
-const VOLUME_WINDOW_LABELS = {
-  '5m': '5m',
-  '1h': '1h',
-  '24h': '24h',
 };
 const GE_TAX_CAP = 5000000;
 const CHART_RANGE_MS = {
@@ -35,13 +31,16 @@ const columnConfig = [
   { key: 'highalch', label: 'High Alch' },
   { key: 'lowalch', label: 'Low Alch' },
   { key: 'value', label: 'Store Value' },
-  { key: 'volume', label: 'Trade Volume' },
+  { key: 'volume5m', label: 'Volume (5m)' },
+  { key: 'volume1h', label: 'Volume (1h)' },
+  { key: 'volume24h', label: 'Volume (24h)' },
+  { key: 'updatedAt', label: 'Updated' },
   { key: 'buyLimit', label: 'GE Buy Limit' },
   { key: 'flipProfit', label: 'Flip Profit' },
   { key: 'alchProfit', label: 'Alch Profit*' },
 ];
 
-const defaultColumns = new Set(['name', 'high', 'low', 'spread', 'highalch', 'value', 'volume', 'buyLimit', 'flipProfit', 'alchProfit']);
+const defaultColumns = new Set(['name', 'high', 'low', 'highalch', 'volume5m', 'volume1h', 'volume24h', 'updatedAt', 'buyLimit', 'flipProfit', 'alchProfit']);
 
 const state = {
   items: [],
@@ -51,7 +50,6 @@ const state = {
   latestTimestamp: null,
   natureRunePrice: null,
   iconCacheBust: null,
-  volumeWindow: '24h',
   favoritesFilter: 'all',
   favorites: new Set(),
   visibleColumns: new Set(defaultColumns),
@@ -64,6 +62,7 @@ const state = {
   selectedItemId: null,
   snapshots: {},
   ohlcSeries: {},
+  isLoadingData: false,
   historyLoadingItemId: null,
   chartRange: '30d',
   chartMode: 'line',
@@ -80,7 +79,6 @@ const el = {
   minPrice: document.getElementById('minPriceInput'),
   maxPrice: document.getElementById('maxPriceInput'),
   minProfit: document.getElementById('minProfitInput'),
-  volumeWindow: document.getElementById('volumeWindowSelect'),
   minVolumeLabel: document.getElementById('minVolumeLabel'),
   minVolume: document.getElementById('minVolumeInput'),
   status: document.getElementById('status'),
@@ -91,7 +89,6 @@ const el = {
   refresh: document.getElementById('refreshBtn'),
   reset: document.getElementById('resetBtn'),
   headers: document.querySelectorAll('th[data-key]'),
-  volumeHeader: document.getElementById('volumeHeader'),
   columnOptions: document.getElementById('columnOptions'),
   pageSize: document.getElementById('pageSizeSelect'),
   prevPage: document.getElementById('prevPageBtn'),
@@ -140,6 +137,15 @@ function formatPercent(value) {
   return `${fmtPercent.format(value)}%`;
 }
 
+function formatRelativeTime(value) {
+  if (!value) return '-';
+  const deltaSeconds = Math.max(0, Math.round((Date.now() - value) / 1000));
+  if (deltaSeconds < 60) return `${deltaSeconds}s ago`;
+  if (deltaSeconds < 3600) return `${Math.round(deltaSeconds / 60)}m ago`;
+  if (deltaSeconds < 86400) return `${Math.round(deltaSeconds / 3600)}h ago`;
+  return `${Math.round(deltaSeconds / 86400)}d ago`;
+}
+
 function formatShortDateTime(value) {
   if (!value) return '-';
   return new Date(value).toLocaleString(undefined, {
@@ -172,10 +178,6 @@ function getIconUrl(iconName, cacheBust = null) {
 function formatBuyLimit(value) {
   if (value === null || value === undefined) return '-';
   return fmtNumber.format(value);
-}
-
-function getVolumeWindowLabel(windowKey) {
-  return VOLUME_WINDOW_LABELS[windowKey] ?? '24h';
 }
 
 function normalizeNum(inputValue) {
@@ -244,12 +246,6 @@ function extractTimedVolume(entry) {
   return (high ?? 0) + (low ?? 0);
 }
 
-function getVolumeForWindow(item, windowKey) {
-  if (windowKey === '5m') return item.volume5m;
-  if (windowKey === '1h') return item.volume1h;
-  return item.volume24h;
-}
-
 function calculateGeTax(price) {
   if (!state.applyTax || price === null || price === undefined || price <= 0) {
     return 0;
@@ -273,22 +269,6 @@ function enrichCalculatedFields(item) {
 
 function updateCalculatedFields() {
   state.items = state.items.map((item) => enrichCalculatedFields(item));
-}
-
-function updateVolumeUiLabels() {
-  const label = getVolumeWindowLabel(state.volumeWindow);
-  if (el.volumeHeader) {
-    el.volumeHeader.textContent = `Trade Volume (${label})`;
-  }
-  if (el.minVolumeLabel) {
-    el.minVolumeLabel.childNodes[0].textContent = `Min trade volume (${label})`;
-  }
-}
-
-function applyVolumeWindowToItems() {
-  state.items.forEach((item) => {
-    item.volume = getVolumeForWindow(item, state.volumeWindow);
-  });
 }
 
 function sortItems(items) {
@@ -334,7 +314,6 @@ function getCurrentFilterState() {
     minPrice: el.minPrice.value,
     maxPrice: el.maxPrice.value,
     minProfit: el.minProfit.value,
-    volumeWindow: el.volumeWindow.value,
     minVolume: el.minVolume.value,
     pageSize: el.pageSize.value,
     applyTax: el.applyTax.checked,
@@ -352,7 +331,6 @@ function applyPresetValues(preset) {
   el.minPrice.value = preset.minPrice ?? '';
   el.maxPrice.value = preset.maxPrice ?? '';
   el.minProfit.value = preset.minProfit ?? '';
-  el.volumeWindow.value = preset.volumeWindow ?? '24h';
   el.minVolume.value = preset.minVolume ?? '';
   el.pageSize.value = preset.pageSize ?? '100';
   el.applyTax.checked = preset.applyTax ?? true;
@@ -362,13 +340,10 @@ function applyPresetValues(preset) {
   state.sortDirection = preset.sortDirection ?? 'desc';
   state.visibleColumns = new Set(Array.isArray(preset.visibleColumns) ? preset.visibleColumns : defaultColumns);
   state.pageSize = normalizeNum(el.pageSize.value) || 100;
-  state.volumeWindow = VOLUME_WINDOW_LABELS[el.volumeWindow.value] ? el.volumeWindow.value : '24h';
   state.applyTax = Boolean(el.applyTax.checked);
   state.taxRate = Math.max(0, normalizeNum(el.taxRate.value) ?? 2);
   renderColumnOptions();
-  updateVolumeUiLabels();
   updateCalculatedFields();
-  applyVolumeWindowToItems();
   applyFilters();
 }
 
@@ -418,7 +393,6 @@ function applyFilters({ resetPage = true } = {}) {
   state.taxRate = Math.max(0, normalizeNum(el.taxRate.value) ?? 2);
 
   updateCalculatedFields();
-  applyVolumeWindowToItems();
 
   state.filtered = state.items.filter((item) => {
     if (query && !item.name.toLowerCase().includes(query)) return false;
@@ -428,7 +402,7 @@ function applyFilters({ resetPage = true } = {}) {
     if (minPrice !== null && (item.high ?? -1) < minPrice) return false;
     if (maxPrice !== null && (item.high ?? Number.MAX_SAFE_INTEGER) > maxPrice) return false;
     if (minProfit !== null && (item.alchProfit ?? Number.NEGATIVE_INFINITY) < minProfit) return false;
-    if (minVolume !== null && (item.volume ?? Number.NEGATIVE_INFINITY) < minVolume) return false;
+    if (minVolume !== null && (item.volume24h ?? Number.NEGATIVE_INFINITY) < minVolume) return false;
     return true;
   });
 
@@ -528,7 +502,10 @@ function renderTable() {
     renderRowCell(tr, formatCoins(item.highalch));
     renderRowCell(tr, formatCoins(item.lowalch));
     renderRowCell(tr, formatCoins(item.value));
-    renderRowCell(tr, formatVolume(item.volume));
+    renderRowCell(tr, formatVolume(item.volume5m));
+    renderRowCell(tr, formatVolume(item.volume1h));
+    renderRowCell(tr, formatVolume(item.volume24h));
+    renderRowCell(tr, formatRelativeTime(item.updatedAt ? item.updatedAt * 1000 : null));
     renderRowCell(tr, formatBuyLimit(item.buyLimit));
     renderRowCell(tr, formatCoins(item.flipProfit), item.flipProfit > 0 ? 'pos' : item.flipProfit < 0 ? 'neg' : '');
     renderRowCell(tr, formatCoins(item.alchProfit), item.alchProfit > 0 ? 'pos' : item.alchProfit < 0 ? 'neg' : '');
@@ -664,6 +641,9 @@ function mergeData(mapping, latest, volumes, prices5m, prices1h) {
       const volume1h = volume1hMap[item.id] || {};
       const high = price.high ?? null;
       const low = price.low ?? null;
+      const highTime = typeof price.highTime === 'number' ? price.highTime : null;
+      const lowTime = typeof price.lowTime === 'number' ? price.lowTime : null;
+      const updatedAt = Math.max(highTime ?? 0, lowTime ?? 0) || null;
       const highalch = item.highalch ?? null;
       const lowalch = item.lowalch ?? null;
       const value = item.value ?? null;
@@ -683,13 +663,15 @@ function mergeData(mapping, latest, volumes, prices5m, prices1h) {
         members: Boolean(item.members),
         high,
         low,
+        highTime,
+        lowTime,
+        updatedAt,
         highalch,
         lowalch,
         value,
         volume24h: dailyVolume,
         volume5m: shortVolume5m,
         volume1h: shortVolume1h,
-        volume: dailyVolume,
         buyLimit,
         alchProfit,
       });
@@ -1231,7 +1213,12 @@ function renderSelectedItem() {
     { label: 'Sell (low)', value: formatCoins(item.low) },
     { label: 'Spread', value: formatCoins(item.spread) },
     { label: 'GE tax', value: formatCoins(item.geTax) },
-    { label: `Volume (${getVolumeWindowLabel(state.volumeWindow)})`, value: formatVolume(item.volume) },
+    { label: 'Volume (5m)', value: formatVolume(item.volume5m) },
+    { label: 'Volume (1h)', value: formatVolume(item.volume1h) },
+    { label: 'Volume (24h)', value: formatVolume(item.volume24h) },
+    { label: 'Last update', value: formatShortDateTime(item.updatedAt ? item.updatedAt * 1000 : null) },
+    { label: 'High price update', value: formatShortDateTime(item.highTime ? item.highTime * 1000 : null) },
+    { label: 'Low price update', value: formatShortDateTime(item.lowTime ? item.lowTime * 1000 : null) },
     { label: 'Buy limit', value: formatBuyLimit(item.buyLimit) },
   ]);
 
@@ -1415,6 +1402,10 @@ async function refreshSelectedChartData() {
 }
 
 async function loadData({ forceRefresh = false } = {}) {
+  if (state.isLoadingData) {
+    return;
+  }
+  state.isLoadingData = true;
   el.status.textContent = forceRefresh ? 'Refreshing API data...' : 'Loading API data...';
   el.refresh.disabled = true;
   if (forceRefresh) {
@@ -1431,7 +1422,6 @@ async function loadData({ forceRefresh = false } = {}) {
     ]);
 
     state.items = mergeData(mapping, latest, volumes, prices5m, prices1h);
-    applyVolumeWindowToItems();
     state.latestTimestamp = getLatestTimestamp(latest);
 
     const updatedAt = state.latestTimestamp ? new Date(state.latestTimestamp * 1000).toLocaleString() : 'Unknown';
@@ -1447,6 +1437,7 @@ async function loadData({ forceRefresh = false } = {}) {
     console.error(error);
     el.status.textContent = 'Failed to load API data. Check DevTools for blocked requests (CORS, ad-blocker, firewall, or proxy).';
   } finally {
+    state.isLoadingData = false;
     el.refresh.disabled = false;
   }
 }
@@ -1458,21 +1449,18 @@ function resetFilters() {
   el.minPrice.value = '';
   el.maxPrice.value = '';
   el.minProfit.value = '';
-  el.volumeWindow.value = '24h';
   el.minVolume.value = '';
   el.pageSize.value = '100';
   el.applyTax.checked = true;
   el.taxRate.value = '2';
   state.sortKey = 'alchProfit';
   state.sortDirection = 'desc';
-  state.volumeWindow = '24h';
   state.favoritesFilter = 'all';
   state.visibleColumns = new Set(defaultColumns);
   state.pageSize = 100;
   state.selectedPreset = '';
   renderPresetOptions();
   renderColumnOptions();
-  updateVolumeUiLabels();
   applyFilters();
 }
 
@@ -1521,12 +1509,6 @@ function setupEvents() {
 
   el.savePresetBtn.addEventListener('click', saveCurrentPreset);
   el.deletePresetBtn.addEventListener('click', deleteSelectedPreset);
-
-  el.volumeWindow.addEventListener('change', () => {
-    state.volumeWindow = VOLUME_WINDOW_LABELS[el.volumeWindow.value] ? el.volumeWindow.value : '24h';
-    updateVolumeUiLabels();
-    applyFilters();
-  });
 
   el.pageSize.addEventListener('change', () => {
     const nextPageSize = normalizeNum(el.pageSize.value);
@@ -1601,10 +1583,17 @@ function setupEvents() {
   });
 }
 
+function setupAutoRefresh() {
+  window.setInterval(() => {
+    if (document.hidden) return;
+    loadData();
+  }, AUTO_REFRESH_MS);
+}
+
 state.favorites = loadFavorites();
 state.presets = loadPresets();
 renderPresetOptions();
 renderColumnOptions();
-updateVolumeUiLabels();
 setupEvents();
+setupAutoRefresh();
 loadData();

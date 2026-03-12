@@ -66,15 +66,6 @@
         <input id="minProfitInput" type="number" step="1" placeholder="0" />
       </label>
 
-      <label>
-        Volume window
-        <select id="volumeWindowSelect">
-          <option value="5m">5m</option>
-          <option value="1h">1h</option>
-          <option value="24h" selected>24h</option>
-        </select>
-      </label>
-
       <label id="minVolumeLabel">
         Min trade volume (24h)
         <input id="minVolumeInput" type="number" min="0" step="1" placeholder="0" />
@@ -132,7 +123,10 @@
             <th data-key="highalch">High Alch</th>
             <th data-key="lowalch">Low Alch</th>
             <th data-key="value">Store Value</th>
-            <th data-key="volume" id="volumeHeader">Trade Volume (24h)</th>
+            <th data-key="volume5m">Volume (5m)</th>
+            <th data-key="volume1h">Volume (1h)</th>
+            <th data-key="volume24h">Volume (24h)</th>
+            <th data-key="updatedAt">Updated</th>
             <th data-key="buyLimit">GE Buy Limit</th>
             <th data-key="flipProfit">Flip Profit</th>
             <th data-key="alchProfit">Alch Profit*</th>
