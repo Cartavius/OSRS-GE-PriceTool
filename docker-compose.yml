@@ -2,6 +2,7 @@ services:
   osrs-ge-tool:
     build: .
     container_name: osrs-ge-tool
+    restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
