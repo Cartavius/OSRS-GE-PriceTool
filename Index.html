@@ -115,22 +115,7 @@
     <div class="table-wrap">
       <table id="itemsTable">
         <thead>
-          <tr>
-            <th data-key="name">Item</th>
-            <th data-key="high">Buy (high)</th>
-            <th data-key="low">Sell (low)</th>
-            <th data-key="spread">Spread</th>
-            <th data-key="highalch">High Alch</th>
-            <th data-key="lowalch">Low Alch</th>
-            <th data-key="value">Store Value</th>
-            <th data-key="volume5m">Volume (5m)</th>
-            <th data-key="volume1h">Volume (1h)</th>
-            <th data-key="volume24h">Volume (24h)</th>
-            <th data-key="updatedAt">Updated</th>
-            <th data-key="buyLimit">GE Buy Limit</th>
-            <th data-key="flipProfit">Flip Profit</th>
-            <th data-key="alchProfit">Alch Profit*</th>
-          </tr>
+          <tr id="tableHeaderRow"></tr>
         </thead>
         <tbody id="tableBody"></tbody>
       </table>
@@ -141,7 +126,10 @@
       <div class="detail-panel">
         <div class="detail-panel-header">
           <div>
-            <h2 id="detailTitle">Item details</h2>
+            <div class="detail-title-row">
+              <h2 id="detailTitle">Item details</h2>
+              <a id="detailWikiLink" class="detail-wiki-link hidden" href="#" target="_blank" rel="noopener noreferrer">Open Wiki</a>
+            </div>
             <p id="detailSubtitle">Select an item to inspect pricing, liquidity, and recent local snapshots.</p>
           </div>
           <button id="closeDetailBtn" type="button" class="secondary">Close</button>
@@ -154,7 +142,10 @@
 
         <div class="detail-grid">
           <div class="detail-card">
-            <h3>Market</h3>
+            <div class="detail-card-header">
+              <h3>Market</h3>
+              <a id="detailWikiLinkSecondary" class="detail-wiki-link hidden" href="#" target="_blank" rel="noopener noreferrer">Wiki page</a>
+            </div>
             <dl id="detailMarketStats" class="detail-stats"></dl>
           </div>
           <div class="detail-card">

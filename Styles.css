@@ -13,6 +13,10 @@ body.modal-open {
   overflow: hidden;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .container {
   max-width: 1300px;
   margin: 0 auto;
@@ -206,6 +210,61 @@ th {
   user-select: none;
 }
 
+.table-header.is-static {
+  cursor: default;
+}
+
+.header-content {
+  display: block;
+  padding-right: 0.65rem;
+}
+
+.column-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.column-resizer:hover {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+th {
+  position: sticky;
+}
+
+th,
+td {
+  position: relative;
+}
+
+.volume-stack {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 7rem;
+}
+
+.volume-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.88rem;
+}
+
+.volume-label {
+  color: #94a3b8;
+}
+
+.volume-value {
+  text-align: right;
+}
+
 .hidden-column {
   display: none;
 }
@@ -274,6 +333,13 @@ tbody tr.is-selected {
   margin: 0;
 }
 
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .detail-panel-header p {
   margin: 0.25rem 0 0;
   color: #cbd5e1;
@@ -327,6 +393,17 @@ tbody tr.is-selected {
   gap: 1rem;
   align-items: baseline;
   margin-bottom: 0.75rem;
+}
+
+.detail-wiki-link {
+  color: #7dd3fc;
+  text-decoration: none;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.detail-wiki-link:hover {
+  text-decoration: underline;
 }
 
 .chart-toolbar {

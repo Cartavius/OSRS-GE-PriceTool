@@ -6,6 +6,8 @@ const NATURE_RUNE_ITEM_ID = 561;
 const CACHE_KEY_PREFIX = 'osrs_ge_cache_v1';
 const FAVORITES_KEY = 'osrs_ge_favorites_v1';
 const PRESETS_KEY = 'osrs_ge_presets_v1';
+const COLUMN_ORDER_KEY = 'osrs_ge_column_order_v1';
+const COLUMN_WIDTHS_KEY = 'osrs_ge_column_widths_v1';
 const AUTO_REFRESH_MS = 60 * 1000;
 const CACHE_TTL_MS = {
   mapping: 24 * 60 * 60 * 1000,
@@ -31,16 +33,15 @@ const columnConfig = [
   { key: 'highalch', label: 'High Alch' },
   { key: 'lowalch', label: 'Low Alch' },
   { key: 'value', label: 'Store Value' },
-  { key: 'volume5m', label: 'Volume (5m)' },
-  { key: 'volume1h', label: 'Volume (1h)' },
-  { key: 'volume24h', label: 'Volume (24h)' },
+  { key: 'volume', label: 'Trade Volume', sortable: false },
   { key: 'updatedAt', label: 'Updated' },
   { key: 'buyLimit', label: 'GE Buy Limit' },
   { key: 'flipProfit', label: 'Flip Profit' },
   { key: 'alchProfit', label: 'Alch Profit*' },
 ];
 
-const defaultColumns = new Set(['name', 'high', 'low', 'highalch', 'volume5m', 'volume1h', 'volume24h', 'updatedAt', 'buyLimit', 'flipProfit', 'alchProfit']);
+const defaultColumns = new Set(['name', 'high', 'low', 'highalch', 'volume', 'updatedAt', 'buyLimit', 'flipProfit', 'alchProfit']);
+const defaultColumnOrder = columnConfig.map((column) => column.key);
 
 const state = {
   items: [],
@@ -53,6 +54,9 @@ const state = {
   favoritesFilter: 'all',
   favorites: new Set(),
   visibleColumns: new Set(defaultColumns),
+  columnOrder: [...defaultColumnOrder],
+  columnWidths: {},
+  dragColumnKey: null,
   currentPage: 1,
   pageSize: 100,
   applyTax: true,
@@ -88,7 +92,7 @@ const el = {
   tbody: document.getElementById('tableBody'),
   refresh: document.getElementById('refreshBtn'),
   reset: document.getElementById('resetBtn'),
-  headers: document.querySelectorAll('th[data-key]'),
+  headerRow: document.getElementById('tableHeaderRow'),
   columnOptions: document.getElementById('columnOptions'),
   pageSize: document.getElementById('pageSizeSelect'),
   prevPage: document.getElementById('prevPageBtn'),
@@ -101,6 +105,8 @@ const el = {
   taxRate: document.getElementById('taxRateInput'),
   detailPanel: document.getElementById('detailPanel'),
   detailTitle: document.getElementById('detailTitle'),
+  detailWikiLink: document.getElementById('detailWikiLink'),
+  detailWikiLinkSecondary: document.getElementById('detailWikiLinkSecondary'),
   detailSubtitle: document.getElementById('detailSubtitle'),
   detailIcon: document.getElementById('detailIcon'),
   detailTags: document.getElementById('detailTags'),
@@ -225,6 +231,32 @@ function savePresets() {
   saveStoredJson(PRESETS_KEY, state.presets);
 }
 
+function loadColumnOrder() {
+  const parsed = loadStoredJson(COLUMN_ORDER_KEY, []);
+  if (!Array.isArray(parsed)) return [...defaultColumnOrder];
+  const known = new Set(defaultColumnOrder);
+  const next = parsed.filter((key) => known.has(key));
+  defaultColumnOrder.forEach((key) => {
+    if (!next.includes(key)) {
+      next.push(key);
+    }
+  });
+  return next;
+}
+
+function saveColumnOrder() {
+  saveStoredJson(COLUMN_ORDER_KEY, state.columnOrder);
+}
+
+function loadColumnWidths() {
+  const parsed = loadStoredJson(COLUMN_WIDTHS_KEY, {});
+  return parsed && typeof parsed === 'object' ? parsed : {};
+}
+
+function saveColumnWidths() {
+  saveStoredJson(COLUMN_WIDTHS_KEY, state.columnWidths);
+}
+
 function isFavorite(itemId) {
   return state.favorites.has(itemId);
 }
@@ -271,6 +303,17 @@ function updateCalculatedFields() {
   state.items = state.items.map((item) => enrichCalculatedFields(item));
 }
 
+function getWikiUrl(item) {
+  if (!item?.id) return null;
+  return `https://oldschool.runescape.wiki/w/Special:Lookup?type=item&id=${encodeURIComponent(item.id)}`;
+}
+
+function getOrderedColumns() {
+  return state.columnOrder
+    .map((key) => columnConfig.find((column) => column.key === key))
+    .filter(Boolean);
+}
+
 function sortItems(items) {
   const sorted = [...items];
   const { sortKey, sortDirection } = state;
@@ -291,18 +334,105 @@ function sortItems(items) {
   return sorted;
 }
 
-function updateVisibleColumns() {
-  const headers = document.querySelectorAll('th[data-key]');
-  headers.forEach((header, index) => {
-    const key = header.dataset.key;
-    const visible = state.visibleColumns.has(key);
-    header.classList.toggle('hidden-column', !visible);
+function applyColumnWidth(cell, key) {
+  const width = state.columnWidths[key];
+  if (!width) return;
+  cell.style.width = `${width}px`;
+  cell.style.minWidth = `${width}px`;
+  cell.style.maxWidth = `${width}px`;
+}
 
-    const rows = el.tbody.querySelectorAll('tr');
-    rows.forEach((row) => {
-      if (!row.children[index]) return;
-      row.children[index].classList.toggle('hidden-column', !visible);
-    });
+function handleColumnDragStart(event) {
+  const key = event.currentTarget.dataset.key;
+  if (!key) return;
+  state.dragColumnKey = key;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', key);
+}
+
+function handleColumnDrop(event) {
+  event.preventDefault();
+  const targetKey = event.currentTarget.dataset.key;
+  const sourceKey = state.dragColumnKey;
+  if (!targetKey || !sourceKey || targetKey === sourceKey) return;
+  const next = [...state.columnOrder];
+  const sourceIndex = next.indexOf(sourceKey);
+  const targetIndex = next.indexOf(targetKey);
+  if (sourceIndex === -1 || targetIndex === -1) return;
+  next.splice(sourceIndex, 1);
+  next.splice(targetIndex, 0, sourceKey);
+  state.columnOrder = next;
+  saveColumnOrder();
+  renderTable();
+}
+
+function beginColumnResize(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const key = event.currentTarget.dataset.key;
+  const header = event.currentTarget.parentElement;
+  if (!key || !header) return;
+  const startX = event.clientX;
+  const startWidth = header.getBoundingClientRect().width;
+
+  function onMove(moveEvent) {
+    const nextWidth = Math.max(88, Math.round(startWidth + (moveEvent.clientX - startX)));
+    state.columnWidths[key] = nextWidth;
+    saveColumnWidths();
+    renderTable();
+  }
+
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function renderHeaders() {
+  el.headerRow.textContent = '';
+  getOrderedColumns().forEach((column) => {
+    const th = document.createElement('th');
+    th.dataset.key = column.key;
+    th.className = `table-header${column.sortable === false ? ' is-static' : ''}`;
+    th.draggable = !column.alwaysVisible || column.key === 'name';
+    applyColumnWidth(th, column.key);
+    if (!state.visibleColumns.has(column.key)) {
+      th.classList.add('hidden-column');
+    }
+
+    const headerContent = document.createElement('div');
+    headerContent.className = 'header-content';
+    headerContent.textContent = column.label;
+    th.appendChild(headerContent);
+
+    const resizeHandle = document.createElement('button');
+    resizeHandle.type = 'button';
+    resizeHandle.className = 'column-resizer';
+    resizeHandle.dataset.key = column.key;
+    resizeHandle.setAttribute('aria-label', `Resize ${column.label} column`);
+    resizeHandle.addEventListener('mousedown', beginColumnResize);
+    th.appendChild(resizeHandle);
+
+    th.addEventListener('dragstart', handleColumnDragStart);
+    th.addEventListener('dragover', (event) => event.preventDefault());
+    th.addEventListener('drop', handleColumnDrop);
+    if (column.sortable !== false) {
+      th.addEventListener('click', () => {
+        const key = column.key;
+        if (state.sortKey === key) {
+          state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+          state.sortKey = key;
+          state.sortDirection = key === 'name' ? 'asc' : 'desc';
+        }
+        applyFilters({ resetPage: false });
+      });
+    }
+
+    el.headerRow.appendChild(th);
   });
 }
 
@@ -421,6 +551,33 @@ function renderRowCell(tr, text, className = '') {
   }
   td.textContent = text;
   tr.appendChild(td);
+  return td;
+}
+
+function renderVolumeCell(tr, item) {
+  const td = document.createElement('td');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'volume-stack';
+  [
+    { label: '5m', value: item.volume5m },
+    { label: '1h', value: item.volume1h },
+    { label: '24h', value: item.volume24h },
+  ].forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = 'volume-row';
+    const label = document.createElement('span');
+    label.className = 'volume-label';
+    label.textContent = entry.label;
+    const value = document.createElement('span');
+    value.className = 'volume-value';
+    value.textContent = formatVolume(entry.value);
+    row.appendChild(label);
+    row.appendChild(value);
+    wrapper.appendChild(row);
+  });
+  td.appendChild(wrapper);
+  tr.appendChild(td);
+  return td;
 }
 
 function selectItem(itemId) {
@@ -441,6 +598,8 @@ function renderTable() {
   const pageItems = state.filtered.slice(pageStart, pageStart + state.pageSize);
 
   el.tbody.textContent = '';
+  renderHeaders();
+  const orderedColumns = getOrderedColumns();
   for (const item of pageItems) {
     const tr = document.createElement('tr');
     if (state.selectedItemId === item.id) {
@@ -494,21 +653,32 @@ function renderTable() {
     nameSpan.textContent = item.name ?? '';
     itemCell.appendChild(nameSpan);
     nameTd.appendChild(itemCell);
-    tr.appendChild(nameTd);
+    tr.textContent = '';
+    const generatedCells = {
+      name: nameTd,
+      high: renderRowCell(tr, formatCoins(item.high)),
+      low: renderRowCell(tr, formatCoins(item.low)),
+      spread: renderRowCell(tr, formatCoins(item.spread)),
+      highalch: renderRowCell(tr, formatCoins(item.highalch)),
+      lowalch: renderRowCell(tr, formatCoins(item.lowalch)),
+      value: renderRowCell(tr, formatCoins(item.value)),
+      volume: renderVolumeCell(tr, item),
+      updatedAt: renderRowCell(tr, formatRelativeTime(item.updatedAt ? item.updatedAt * 1000 : null)),
+      buyLimit: renderRowCell(tr, formatBuyLimit(item.buyLimit)),
+      flipProfit: renderRowCell(tr, formatCoins(item.flipProfit), item.flipProfit > 0 ? 'pos' : item.flipProfit < 0 ? 'neg' : ''),
+      alchProfit: renderRowCell(tr, formatCoins(item.alchProfit), item.alchProfit > 0 ? 'pos' : item.alchProfit < 0 ? 'neg' : ''),
+    };
 
-    renderRowCell(tr, formatCoins(item.high));
-    renderRowCell(tr, formatCoins(item.low));
-    renderRowCell(tr, formatCoins(item.spread));
-    renderRowCell(tr, formatCoins(item.highalch));
-    renderRowCell(tr, formatCoins(item.lowalch));
-    renderRowCell(tr, formatCoins(item.value));
-    renderRowCell(tr, formatVolume(item.volume5m));
-    renderRowCell(tr, formatVolume(item.volume1h));
-    renderRowCell(tr, formatVolume(item.volume24h));
-    renderRowCell(tr, formatRelativeTime(item.updatedAt ? item.updatedAt * 1000 : null));
-    renderRowCell(tr, formatBuyLimit(item.buyLimit));
-    renderRowCell(tr, formatCoins(item.flipProfit), item.flipProfit > 0 ? 'pos' : item.flipProfit < 0 ? 'neg' : '');
-    renderRowCell(tr, formatCoins(item.alchProfit), item.alchProfit > 0 ? 'pos' : item.alchProfit < 0 ? 'neg' : '');
+    tr.textContent = '';
+    orderedColumns.forEach((column) => {
+      const cell = generatedCells[column.key] ?? (column.key === 'name' ? nameTd : null);
+      if (!cell) return;
+      applyColumnWidth(cell, column.key);
+      if (!state.visibleColumns.has(column.key)) {
+        cell.classList.add('hidden-column');
+      }
+      tr.appendChild(cell);
+    });
     el.tbody.appendChild(tr);
   }
 
@@ -516,7 +686,6 @@ function renderTable() {
   el.pageInfo.textContent = `Page ${fmtNumber.format(state.currentPage)} / ${fmtNumber.format(totalPages)}`;
   el.prevPage.disabled = state.currentPage <= 1;
   el.nextPage.disabled = state.currentPage >= totalPages;
-  updateVisibleColumns();
 }
 
 async function fetchJson(endpoint) {
@@ -1181,6 +1350,7 @@ function renderSelectedItem() {
     el.detailPanel.classList.add('hidden');
     document.body.classList.remove('modal-open');
     el.detailChartResetZoom.disabled = true;
+    [el.detailWikiLink, el.detailWikiLinkSecondary].forEach((link) => link?.classList.add('hidden'));
     return;
   }
 
@@ -1190,6 +1360,17 @@ function renderSelectedItem() {
   el.detailChartMode.value = state.chartMode;
   el.detailChartVolume.checked = state.chartShowVolume;
   el.detailTitle.textContent = item.name;
+  const wikiUrl = getWikiUrl(item);
+  [el.detailWikiLink, el.detailWikiLinkSecondary].forEach((link) => {
+    if (!link) return;
+    if (wikiUrl) {
+      link.href = wikiUrl;
+      link.classList.remove('hidden');
+    } else {
+      link.removeAttribute('href');
+      link.classList.add('hidden');
+    }
+  });
   el.detailSubtitle.textContent = item.members ? 'Members item' : 'Free-to-play item';
   if (item.iconUrl) {
     el.detailIcon.src = item.iconUrl;
@@ -1488,7 +1669,7 @@ function renderColumnOptions() {
       } else {
         state.visibleColumns.delete(key);
       }
-      updateVisibleColumns();
+      renderTable();
     });
   });
 }
@@ -1567,20 +1748,6 @@ function setupEvents() {
       closeDetailPanel();
     }
   });
-
-  el.headers.forEach((header) => {
-    header.addEventListener('click', () => {
-      const key = header.dataset.key;
-      if (!key) return;
-      if (state.sortKey === key) {
-        state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
-      } else {
-        state.sortKey = key;
-        state.sortDirection = key === 'name' ? 'asc' : 'desc';
-      }
-      applyFilters({ resetPage: false });
-    });
-  });
 }
 
 function setupAutoRefresh() {
@@ -1592,6 +1759,8 @@ function setupAutoRefresh() {
 
 state.favorites = loadFavorites();
 state.presets = loadPresets();
+state.columnOrder = loadColumnOrder();
+state.columnWidths = loadColumnWidths();
 renderPresetOptions();
 renderColumnOptions();
 setupEvents();
