@@ -392,6 +392,52 @@ class Handler(SimpleHTTPRequestHandler):
         ]
 
     @classmethod
+    def load_history_stats(cls):
+        cls.init_history_db()
+        db_size_bytes = cls.history_db_path.stat().st_size if cls.history_db_path.exists() else 0
+        with cls.history_db_lock:
+            with cls._open_history_db() as connection:
+                row = connection.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS rows,
+                        COUNT(DISTINCT item_id) AS items,
+                        MIN(ts) AS min_ts,
+                        MAX(ts) AS max_ts,
+                        COUNT(DISTINCT ts) AS snapshots
+                    FROM price_history
+                    """
+                ).fetchone()
+
+        rows = int(row[0] or 0)
+        items = int(row[1] or 0)
+        min_ts = row[2]
+        max_ts = row[3]
+        snapshots = int(row[4] or 0)
+        span_seconds = max(0, int(max_ts - min_ts)) if min_ts is not None and max_ts is not None else 0
+        rows_per_snapshot = (rows / snapshots) if snapshots else 0.0
+        bytes_per_row = (db_size_bytes / rows) if rows else 0.0
+        snapshots_per_year = (365 * 24 * 60 * 60) / max(60, cls.history_poll_interval_seconds)
+        projected_rows = rows_per_snapshot * snapshots_per_year
+        projected_size_bytes = projected_rows * bytes_per_row
+
+        return {
+            "db_path": str(cls.history_db_path),
+            "db_size_bytes": db_size_bytes,
+            "rows": rows,
+            "distinct_items": items,
+            "distinct_snapshots": snapshots,
+            "min_ts": min_ts,
+            "max_ts": max_ts,
+            "span_seconds": span_seconds,
+            "rows_per_snapshot": rows_per_snapshot,
+            "bytes_per_row": bytes_per_row,
+            "poll_interval_seconds": cls.history_poll_interval_seconds,
+            "projected_rows_1y": projected_rows,
+            "projected_size_bytes_1y": projected_size_bytes,
+        }
+
+    @classmethod
     def _load_cached_icon(cls, icon_name):
         body_path, meta_path = cls._icon_cache_paths(icon_name)
         if not body_path.exists() or not meta_path.exists():
@@ -488,6 +534,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/icon/stats":
             self.send_icon_stats()
+            return
+        if parsed.path == "/history/stats":
+            self.send_history_stats()
             return
         if parsed.path == "/history":
             self.send_history(parsed.query)
@@ -719,6 +768,31 @@ class Handler(SimpleHTTPRequestHandler):
                 "entries": entries,
             }
         ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError as write_error:
+            if not self._is_client_disconnect(write_error):
+                raise
+
+    def send_history_stats(self):
+        try:
+            payload = self.load_history_stats()
+        except sqlite3.DatabaseError as error:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            try:
+                self.wfile.write(json.dumps({"error": "History stats unavailable", "details": str(error)}).encode("utf-8"))
+            except OSError as write_error:
+                if not self._is_client_disconnect(write_error):
+                    raise
+            return
+
+        body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
