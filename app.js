@@ -1440,12 +1440,7 @@ async function loadData({ forceRefresh = false } = {}) {
     renderNatureRuneStatus();
     applyFilters();
 
-    if (state.selectedItemId === null && state.filtered.length > 0) {
-      state.selectedItemId = state.filtered[0].id;
-      renderTable();
-      renderSelectedItem();
-      loadSelectedItemHistory(state.selectedItemId, { forceRefresh: true });
-    } else if (state.selectedItemId !== null) {
+    if (state.selectedItemId !== null) {
       loadSelectedItemHistory(state.selectedItemId, { forceRefresh: true });
     }
   } catch (error) {
