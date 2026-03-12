@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY server.py server.config.json Index.html Styles.css app.js ./
+COPY server.py server.config.json Index.html Styles.css app.js stats.html stats.js ./
 
 EXPOSE 8080
 

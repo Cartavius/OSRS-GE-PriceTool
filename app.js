@@ -162,6 +162,24 @@ function formatShortDateTime(value) {
   });
 }
 
+function getChartHistorySource() {
+  if (state.chartRange === '24h' || state.chartRange === '7d') {
+    return 'raw';
+  }
+  if (state.chartRange === '30d' || state.chartRange === '90d') {
+    return 'hourly';
+  }
+  return 'daily';
+}
+
+function getHistoryCacheKey(itemId, source = getChartHistorySource()) {
+  return `${itemId}:${source}`;
+}
+
+function getOhlcCacheKey(itemId, source = getChartHistorySource(), bucketSeconds = getChartBucketSeconds()) {
+  return `${itemId}:${source}:${bucketSeconds}`;
+}
+
 function getDirectIconUrl(iconName, cacheBust = null) {
   if (!iconName) return null;
   const base = `https://oldschool.runescape.wiki/w/Special:FilePath/${encodeURIComponent(iconName)}`;
@@ -714,12 +732,14 @@ async function fetchJson(endpoint) {
 }
 
 async function fetchItemHistory(itemId, { forceRefresh = false } = {}) {
-  const key = String(itemId);
+  const source = getChartHistorySource();
+  const key = getHistoryCacheKey(itemId, source);
   if (!forceRefresh && Array.isArray(state.snapshots[key])) {
     return state.snapshots[key];
   }
 
-  const response = await fetch(`/history?id=${encodeURIComponent(itemId)}&limit=5000`);
+  const limit = source === 'raw' ? 5000 : 10000;
+  const response = await fetch(`/history?id=${encodeURIComponent(itemId)}&limit=${limit}&source=${encodeURIComponent(source)}`);
   if (!response.ok) {
     throw new Error(`History request failed (${response.status})`);
   }
@@ -731,6 +751,9 @@ async function fetchItemHistory(itemId, { forceRefresh = false } = {}) {
 }
 
 function getChartBucketSeconds() {
+  const source = getChartHistorySource();
+  if (source === 'hourly') return 60 * 60;
+  if (source === 'daily') return 24 * 60 * 60;
   if (state.chartRange === '24h') return 5 * 60;
   if (state.chartRange === '7d') return 60 * 60;
   if (state.chartRange === '30d') return 6 * 60 * 60;
@@ -739,14 +762,15 @@ function getChartBucketSeconds() {
 }
 
 async function fetchItemOhlcHistory(itemId, { forceRefresh = false } = {}) {
+  const source = getChartHistorySource();
   const bucketSeconds = getChartBucketSeconds();
-  const key = `${itemId}:${bucketSeconds}`;
+  const key = getOhlcCacheKey(itemId, source, bucketSeconds);
   if (!forceRefresh && Array.isArray(state.ohlcSeries[key])) {
     return state.ohlcSeries[key];
   }
 
   const response = await fetch(
-    `/history?id=${encodeURIComponent(itemId)}&limit=10000&aggregate=ohlc&bucket_seconds=${bucketSeconds}`
+    `/history?id=${encodeURIComponent(itemId)}&limit=10000&aggregate=ohlc&source=${encodeURIComponent(source)}&bucket_seconds=${bucketSeconds}`
   );
   if (!response.ok) {
     throw new Error(`OHLC history request failed (${response.status})`);
@@ -927,8 +951,8 @@ function filterEntriesByZoom(entries) {
 
 function getChartEntries(itemId) {
   const baseEntries = state.chartMode === 'candles'
-    ? state.ohlcSeries[`${itemId}:${getChartBucketSeconds()}`] || []
-    : state.snapshots[String(itemId)] || [];
+    ? state.ohlcSeries[getOhlcCacheKey(itemId)] || []
+    : state.snapshots[getHistoryCacheKey(itemId)] || [];
   return filterEntriesByZoom(filterEntriesByRange(baseEntries));
 }
 
@@ -1147,9 +1171,10 @@ function drawCandleChartSeries(svg, entries, getX, getPriceY, hoverGroup) {
 }
 
 function renderHistoryChart(item) {
+  const chartSource = getChartHistorySource();
   const allEntries = state.chartMode === 'candles'
-    ? state.ohlcSeries[`${item.id}:${getChartBucketSeconds()}`] || []
-    : state.snapshots[String(item.id)] || [];
+    ? state.ohlcSeries[getOhlcCacheKey(item.id)] || []
+    : state.snapshots[getHistoryCacheKey(item.id)] || [];
   const entryLabel = state.chartMode === 'candles' ? 'bars' : 'snapshots';
   const { filteredEntries, renderEntries } = getRenderableChartData(item.id);
   el.detailChart.textContent = '';
@@ -1164,7 +1189,9 @@ function renderHistoryChart(item) {
     if (state.historyLoadingItemId === item.id) {
       el.detailHistoryStatus.textContent = 'Loading server history...';
     } else {
-      el.detailHistoryStatus.textContent = renderEntries.length === 1 ? `1 stored ${entryLabel.slice(0, -1)} in this range` : `No stored ${entryLabel} yet`;
+      el.detailHistoryStatus.textContent = renderEntries.length === 1
+        ? `1 stored ${entryLabel.slice(0, -1)} in this range (${chartSource})`
+        : `No stored ${entryLabel} yet (${chartSource})`;
     }
     return;
   }
@@ -1176,7 +1203,7 @@ function renderHistoryChart(item) {
   if (!priceValues.length) {
     el.detailChart.classList.add('hidden');
     el.detailChartEmpty.classList.remove('hidden');
-    el.detailHistoryStatus.textContent = `${renderEntries.length} stored ${entryLabel} without price points`;
+    el.detailHistoryStatus.textContent = `${renderEntries.length} stored ${entryLabel} without price points (${chartSource})`;
     return;
   }
 
@@ -1350,7 +1377,7 @@ function renderHistoryChart(item) {
   el.detailChartEmpty.classList.add('hidden');
   const compressionNote = renderEntries.length !== filteredEntries.length ? ` | downsampled to ${renderEntries.length}` : '';
   const zoomNote = state.chartZoomRange ? ' | zoomed' : '';
-  el.detailHistoryStatus.textContent = `${filteredEntries.length} shown / ${allEntries.length} stored ${entryLabel}${compressionNote}${zoomNote}`;
+  el.detailHistoryStatus.textContent = `${filteredEntries.length} shown / ${allEntries.length} stored ${entryLabel} (${chartSource})${compressionNote}${zoomNote}`;
 }
 
 function renderSelectedItem() {
@@ -1566,8 +1593,8 @@ async function loadSelectedItemHistory(itemId, { forceRefresh = false } = {}) {
     ]);
   } catch (error) {
     console.error(error);
-    state.snapshots[String(itemId)] = [];
-    state.ohlcSeries[`${itemId}:${getChartBucketSeconds()}`] = [];
+    state.snapshots[getHistoryCacheKey(itemId)] = [];
+    state.ohlcSeries[getOhlcCacheKey(itemId)] = [];
   } finally {
     state.historyLoadingItemId = null;
     if (state.selectedItemId === itemId) {

@@ -32,6 +32,9 @@ DEFAULT_SETTINGS = {
     "history_tracking": True,
     "history_db_path": ".price-history/osrs-ge-history.sqlite3",
     "history_poll_interval_seconds": 300,
+    "history_raw_retention_days": 180,
+    "history_hourly_retention_days": 730,
+    "history_daily_retention_days": 0,
 }
 
 
@@ -66,6 +69,9 @@ class Handler(SimpleHTTPRequestHandler):
     history_tracking = True
     history_db_path = Path(".price-history/osrs-ge-history.sqlite3")
     history_poll_interval_seconds = 300
+    history_raw_retention_days = 180
+    history_hourly_retention_days = 730
+    history_daily_retention_days = 0
     history_db_lock = threading.Lock()
     history_worker_started = False
     index_pages = ["Index.html", "index.html"]
@@ -198,7 +204,195 @@ class Handler(SimpleHTTPRequestHandler):
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_price_history_item_ts ON price_history (item_id, ts DESC)"
                 )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS price_history_hourly (
+                        item_id INTEGER NOT NULL,
+                        bucket_ts INTEGER NOT NULL,
+                        open_mid REAL,
+                        high_mid REAL,
+                        low_mid REAL,
+                        close_mid REAL,
+                        close_high INTEGER,
+                        close_low INTEGER,
+                        volume_avg REAL,
+                        sample_count INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (item_id, bucket_ts)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_price_history_hourly_item_ts ON price_history_hourly (item_id, bucket_ts DESC)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS price_history_daily (
+                        item_id INTEGER NOT NULL,
+                        bucket_ts INTEGER NOT NULL,
+                        open_mid REAL,
+                        high_mid REAL,
+                        low_mid REAL,
+                        close_mid REAL,
+                        close_high INTEGER,
+                        close_low INTEGER,
+                        volume_avg REAL,
+                        sample_count INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (item_id, bucket_ts)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_price_history_daily_item_ts ON price_history_daily (item_id, bucket_ts DESC)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS history_meta (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )
+                    """
+                )
                 connection.commit()
+
+    @staticmethod
+    def _bucket_start(ts, bucket_seconds):
+        return int(ts) - (int(ts) % int(bucket_seconds))
+
+    @staticmethod
+    def _retention_cutoff_days(retention_days, now_ts):
+        if retention_days is None or retention_days <= 0:
+            return None
+        return int(now_ts) - (int(retention_days) * 24 * 60 * 60)
+
+    @classmethod
+    def _load_meta_int(cls, connection, key):
+        row = connection.execute("SELECT value FROM history_meta WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return None
+        try:
+            return int(row[0])
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _save_meta_int(cls, connection, key, value):
+        connection.execute(
+            """
+            INSERT INTO history_meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, str(int(value))),
+        )
+
+    @classmethod
+    def rebuild_rollup_table(cls, connection, target_table, bucket_seconds, meta_key):
+        latest_raw_ts_row = connection.execute("SELECT MAX(ts) FROM price_history").fetchone()
+        latest_raw_ts = latest_raw_ts_row[0] if latest_raw_ts_row else None
+        if latest_raw_ts is None:
+            return
+
+        last_rollup_ts = cls._load_meta_int(connection, meta_key)
+        start_ts = None if last_rollup_ts is None else cls._bucket_start(last_rollup_ts, bucket_seconds)
+        filter_sql = ""
+        params = [bucket_seconds, bucket_seconds]
+        if start_ts is not None:
+            filter_sql = "WHERE ts >= ?"
+            params.append(start_ts)
+
+        query = f"""
+            WITH bucketed AS (
+                SELECT
+                    item_id,
+                    CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+                    ts,
+                    high,
+                    low,
+                    volume_24h,
+                    CASE
+                        WHEN high IS NOT NULL AND low IS NOT NULL THEN (high + low) / 2.0
+                        WHEN high IS NOT NULL THEN CAST(high AS REAL)
+                        WHEN low IS NOT NULL THEN CAST(low AS REAL)
+                        ELSE NULL
+                    END AS mid_price
+                FROM price_history
+                {filter_sql}
+            ),
+            ranked AS (
+                SELECT
+                    item_id,
+                    bucket_ts,
+                    ts,
+                    high,
+                    low,
+                    volume_24h,
+                    mid_price,
+                    ROW_NUMBER() OVER (PARTITION BY item_id, bucket_ts ORDER BY ts ASC) AS rn_open,
+                    ROW_NUMBER() OVER (PARTITION BY item_id, bucket_ts ORDER BY ts DESC) AS rn_close
+                FROM bucketed
+            ),
+            aggregated AS (
+                SELECT
+                    item_id,
+                    bucket_ts,
+                    MAX(CASE WHEN rn_open = 1 THEN mid_price END) AS open_mid,
+                    MAX(mid_price) AS high_mid,
+                    MIN(mid_price) AS low_mid,
+                    MAX(CASE WHEN rn_close = 1 THEN mid_price END) AS close_mid,
+                    MAX(CASE WHEN rn_close = 1 THEN high END) AS close_high,
+                    MAX(CASE WHEN rn_close = 1 THEN low END) AS close_low,
+                    AVG(volume_24h) AS volume_avg,
+                    COUNT(*) AS sample_count
+                FROM ranked
+                GROUP BY item_id, bucket_ts
+            )
+            INSERT OR REPLACE INTO {target_table} (
+                item_id,
+                bucket_ts,
+                open_mid,
+                high_mid,
+                low_mid,
+                close_mid,
+                close_high,
+                close_low,
+                volume_avg,
+                sample_count
+            )
+            SELECT
+                item_id,
+                bucket_ts,
+                open_mid,
+                high_mid,
+                low_mid,
+                close_mid,
+                close_high,
+                close_low,
+                volume_avg,
+                sample_count
+            FROM aggregated
+        """
+        connection.execute(query, params)
+        cls._save_meta_int(connection, meta_key, latest_raw_ts)
+
+    @classmethod
+    def prune_history_tables(cls, connection, now_ts):
+        retention_specs = [
+            ("price_history", "ts", cls.history_raw_retention_days),
+            ("price_history_hourly", "bucket_ts", cls.history_hourly_retention_days),
+            ("price_history_daily", "bucket_ts", cls.history_daily_retention_days),
+        ]
+        for table_name, time_column, retention_days in retention_specs:
+            cutoff = cls._retention_cutoff_days(retention_days, now_ts)
+            if cutoff is None:
+                continue
+            connection.execute(f"DELETE FROM {table_name} WHERE {time_column} < ?", (cutoff,))
+
+    @classmethod
+    def maintain_history_rollups(cls, connection, latest_ts=None):
+        effective_now = latest_ts or int(time.time())
+        cls.rebuild_rollup_table(connection, "price_history_hourly", 60 * 60, "hourly_last_rollup_ts")
+        cls.rebuild_rollup_table(connection, "price_history_daily", 24 * 60 * 60, "daily_last_rollup_ts")
+        cls.prune_history_tables(connection, effective_now)
 
     @classmethod
     def ensure_history_worker(cls):
@@ -206,6 +400,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         cls.init_history_db()
         with cls.history_db_lock:
+            with cls._open_history_db() as connection:
+                cls.maintain_history_rollups(connection)
+                connection.commit()
             if cls.history_worker_started:
                 return
             cls.history_worker_started = True
@@ -297,6 +494,7 @@ class Handler(SimpleHTTPRequestHandler):
                     """,
                     rows,
                 )
+                cls.maintain_history_rollups(connection, latest_ts=snapshot_ts)
                 connection.commit()
         print(f"[history] snapshot stored for {len(rows)} items at {snapshot_ts}")
 
@@ -323,6 +521,35 @@ class Handler(SimpleHTTPRequestHandler):
                 "high": row[1],
                 "low": row[2],
                 "volume": row[3],
+            }
+            for row in rows
+        ]
+
+    @classmethod
+    def load_item_rollup_history(cls, item_id, limit, source):
+        cls.init_history_db()
+        table_name = "price_history_hourly" if source == "hourly" else "price_history_daily"
+        with cls.history_db_lock:
+            with cls._open_history_db() as connection:
+                cursor = connection.execute(
+                    f"""
+                    SELECT bucket_ts, close_high, close_low, volume_avg, sample_count
+                    FROM {table_name}
+                    WHERE item_id = ?
+                    ORDER BY bucket_ts DESC
+                    LIMIT ?
+                    """,
+                    (item_id, limit),
+                )
+                rows = cursor.fetchall()
+        rows.reverse()
+        return [
+            {
+                "ts": row[0] * 1000,
+                "high": row[1],
+                "low": row[2],
+                "volume": round(row[3]) if row[3] is not None else None,
+                "sample_count": row[4],
             }
             for row in rows
         ]
@@ -392,6 +619,37 @@ class Handler(SimpleHTTPRequestHandler):
         ]
 
     @classmethod
+    def load_item_rollup_ohlc(cls, item_id, limit, source):
+        cls.init_history_db()
+        table_name = "price_history_hourly" if source == "hourly" else "price_history_daily"
+        with cls.history_db_lock:
+            with cls._open_history_db() as connection:
+                cursor = connection.execute(
+                    f"""
+                    SELECT bucket_ts, open_mid, high_mid, low_mid, close_mid, volume_avg, sample_count
+                    FROM {table_name}
+                    WHERE item_id = ?
+                    ORDER BY bucket_ts DESC
+                    LIMIT ?
+                    """,
+                    (item_id, limit),
+                )
+                rows = cursor.fetchall()
+        rows.reverse()
+        return [
+            {
+                "ts": row[0] * 1000,
+                "open": round(row[1]) if row[1] is not None else None,
+                "high": round(row[2]) if row[2] is not None else None,
+                "low": round(row[3]) if row[3] is not None else None,
+                "close": round(row[4]) if row[4] is not None else None,
+                "volume": round(row[5]) if row[5] is not None else None,
+                "sample_count": row[6],
+            }
+            for row in rows
+        ]
+
+    @classmethod
     def load_history_stats(cls):
         cls.init_history_db()
         db_size_bytes = cls.history_db_path.stat().st_size if cls.history_db_path.exists() else 0
@@ -408,6 +666,9 @@ class Handler(SimpleHTTPRequestHandler):
                     FROM price_history
                     """
                 ).fetchone()
+                hourly_rows = connection.execute("SELECT COUNT(*) FROM price_history_hourly").fetchone()[0]
+                daily_rows = connection.execute("SELECT COUNT(*) FROM price_history_daily").fetchone()[0]
+                meta_rows = connection.execute("SELECT COUNT(*) FROM history_meta").fetchone()[0]
 
         rows = int(row[0] or 0)
         items = int(row[1] or 0)
@@ -427,12 +688,20 @@ class Handler(SimpleHTTPRequestHandler):
             "rows": rows,
             "distinct_items": items,
             "distinct_snapshots": snapshots,
+            "hourly_rows": int(hourly_rows or 0),
+            "daily_rows": int(daily_rows or 0),
+            "meta_rows": int(meta_rows or 0),
             "min_ts": min_ts,
             "max_ts": max_ts,
             "span_seconds": span_seconds,
             "rows_per_snapshot": rows_per_snapshot,
             "bytes_per_row": bytes_per_row,
             "poll_interval_seconds": cls.history_poll_interval_seconds,
+            "retention": {
+                "raw_days": cls.history_raw_retention_days,
+                "hourly_days": cls.history_hourly_retention_days,
+                "daily_days": cls.history_daily_retention_days,
+            },
             "projected_rows_1y": projected_rows,
             "projected_size_bytes_1y": projected_size_bytes,
         }
@@ -725,6 +994,7 @@ class Handler(SimpleHTTPRequestHandler):
         item_id_value = params.get("id", [None])[0]
         limit_value = params.get("limit", [1000])[0]
         aggregate = params.get("aggregate", ["raw"])[0]
+        source = params.get("source", ["raw"])[0]
         bucket_seconds_value = params.get("bucket_seconds", [3600])[0]
 
         try:
@@ -733,6 +1003,8 @@ class Handler(SimpleHTTPRequestHandler):
             bucket_seconds = coerce_int(bucket_seconds_value, "bucket_seconds", minimum=60)
             if aggregate not in {"raw", "ohlc"}:
                 raise ValueError(f"Invalid aggregate value: {aggregate!r}")
+            if source not in {"raw", "hourly", "daily"}:
+                raise ValueError(f"Invalid source value: {source!r}")
         except ValueError as error:
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -746,9 +1018,15 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             if aggregate == "ohlc":
-                entries = self.load_item_history_ohlc(item_id, min(limit, 10000), bucket_seconds)
+                if source == "raw":
+                    entries = self.load_item_history_ohlc(item_id, min(limit, 10000), bucket_seconds)
+                else:
+                    entries = self.load_item_rollup_ohlc(item_id, min(limit, 10000), source)
             else:
-                entries = self.load_item_history(item_id, min(limit, 5000))
+                if source == "raw":
+                    entries = self.load_item_history(item_id, min(limit, 5000))
+                else:
+                    entries = self.load_item_rollup_history(item_id, min(limit, 10000), source)
         except sqlite3.DatabaseError as error:
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
@@ -764,6 +1042,7 @@ class Handler(SimpleHTTPRequestHandler):
             {
                 "item_id": item_id,
                 "aggregate": aggregate,
+                "source": source,
                 "bucket_seconds": bucket_seconds if aggregate == "ohlc" else None,
                 "entries": entries,
             }
@@ -924,6 +1203,24 @@ def main():
         type=int,
         help="Background market snapshot interval in seconds",
     )
+    parser.add_argument(
+        "--history-raw-retention-days",
+        default=None,
+        type=int,
+        help="Raw snapshot retention in days (0 = keep forever)",
+    )
+    parser.add_argument(
+        "--history-hourly-retention-days",
+        default=None,
+        type=int,
+        help="Hourly rollup retention in days (0 = keep forever)",
+    )
+    parser.add_argument(
+        "--history-daily-retention-days",
+        default=None,
+        type=int,
+        help="Daily rollup retention in days (0 = keep forever)",
+    )
     args = parser.parse_args()
 
     config_data, config_loaded = load_config(args.config)
@@ -955,6 +1252,21 @@ def main():
         "history_poll_interval_seconds",
         minimum=60,
     )
+    resolved_history_raw_retention = coerce_int(
+        resolve_setting(args.history_raw_retention_days, config_data, "history_raw_retention_days"),
+        "history_raw_retention_days",
+        minimum=0,
+    )
+    resolved_history_hourly_retention = coerce_int(
+        resolve_setting(args.history_hourly_retention_days, config_data, "history_hourly_retention_days"),
+        "history_hourly_retention_days",
+        minimum=0,
+    )
+    resolved_history_daily_retention = coerce_int(
+        resolve_setting(args.history_daily_retention_days, config_data, "history_daily_retention_days"),
+        "history_daily_retention_days",
+        minimum=0,
+    )
 
     Handler.user_agent = resolved_user_agent
     Handler.mirror_icons = resolved_mirror_icons
@@ -966,6 +1278,9 @@ def main():
     Handler.history_tracking = resolved_history_tracking
     Handler.history_db_path = Path(resolved_history_db_path)
     Handler.history_poll_interval_seconds = resolved_history_poll_interval
+    Handler.history_raw_retention_days = resolved_history_raw_retention
+    Handler.history_hourly_retention_days = resolved_history_hourly_retention
+    Handler.history_daily_retention_days = resolved_history_daily_retention
     if resolved_prefetch_icons and not Handler.mirror_icons:
         Handler.mirror_icons = True
         print("[icon] --prefetch-icons requested, enabling --mirror-icons automatically")
@@ -995,7 +1310,9 @@ def main():
     print(f"Icon rate-limit budget: {Handler.icon_rate_limit_count}/{Handler.icon_rate_limit_window_seconds}s")
     print(
         f"History tracking: {'enabled' if Handler.history_tracking else 'disabled'} "
-        f"(db={Handler.history_db_path}, poll={Handler.history_poll_interval_seconds}s)"
+        f"(db={Handler.history_db_path}, poll={Handler.history_poll_interval_seconds}s, "
+        f"retention raw={Handler.history_raw_retention_days}d hourly={Handler.history_hourly_retention_days}d "
+        f"daily={'forever' if Handler.history_daily_retention_days == 0 else f'{Handler.history_daily_retention_days}d'})"
     )
     server.serve_forever()
 

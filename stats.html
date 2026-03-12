@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OSRS GE Storage Stats</title>
+  <link rel="stylesheet" href="Styles.css" />
+</head>
+<body>
+  <main class="container stats-layout">
+    <header>
+      <div class="page-header">
+        <a href="Index.html" class="header-link-button">Back to tool</a>
+        <div class="header-copy">
+          <h1>History Storage Stats</h1>
+          <p>Current database usage, long-term projection, and rollup retention for local market history.</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="stats" aria-live="polite">
+      <span id="statsStatus">Loading storage stats...</span>
+    </section>
+
+    <section class="stats-grid" aria-label="Storage summary">
+      <article class="stats-card">
+        <h2>Current DB Size</h2>
+        <span id="dbSize" class="stats-value">-</span>
+        <span class="stats-label" id="dbPath">-</span>
+      </article>
+      <article class="stats-card">
+        <h2>Projected 1 Year</h2>
+        <span id="projectedSize" class="stats-value">-</span>
+        <span class="stats-label">Estimated from current capture density</span>
+      </article>
+      <article class="stats-card">
+        <h2>Raw Rows</h2>
+        <span id="rawRows" class="stats-value">-</span>
+        <span class="stats-label" id="snapshotCount">-</span>
+      </article>
+      <article class="stats-card">
+        <h2>Rollup Rows</h2>
+        <span id="rollupRows" class="stats-value">-</span>
+        <span class="stats-label" id="rollupBreakdown">-</span>
+      </article>
+    </section>
+
+    <section class="stats-card">
+      <h3>Retention</h3>
+      <dl class="stats-list">
+        <dt>Raw snapshots</dt>
+        <dd id="rawRetention">-</dd>
+        <dt>Hourly rollups</dt>
+        <dd id="hourlyRetention">-</dd>
+        <dt>Daily rollups</dt>
+        <dd id="dailyRetention">-</dd>
+        <dt>Poll interval</dt>
+        <dd id="pollInterval">-</dd>
+        <dt>Rows per snapshot</dt>
+        <dd id="rowsPerSnapshot">-</dd>
+        <dt>Bytes per row</dt>
+        <dd id="bytesPerRow">-</dd>
+      </dl>
+    </section>
+
+    <section class="stats-card">
+      <h3>Table Counts</h3>
+      <table class="stats-table">
+        <thead>
+          <tr>
+            <th scope="col">Table</th>
+            <th scope="col">Rows</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>price_history</td>
+            <td id="tableRawRows">-</td>
+          </tr>
+          <tr>
+            <td>price_history_hourly</td>
+            <td id="tableHourlyRows">-</td>
+          </tr>
+          <tr>
+            <td>price_history_daily</td>
+            <td id="tableDailyRows">-</td>
+          </tr>
+          <tr>
+            <td>history_meta</td>
+            <td id="tableMetaRows">-</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="stats.js"></script>
+</body>
+</html>
