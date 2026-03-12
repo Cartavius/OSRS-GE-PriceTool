@@ -106,7 +106,6 @@ const el = {
   detailPanel: document.getElementById('detailPanel'),
   detailTitle: document.getElementById('detailTitle'),
   detailWikiLink: document.getElementById('detailWikiLink'),
-  detailWikiLinkSecondary: document.getElementById('detailWikiLinkSecondary'),
   detailSubtitle: document.getElementById('detailSubtitle'),
   detailIcon: document.getElementById('detailIcon'),
   detailTags: document.getElementById('detailTags'),
@@ -1350,7 +1349,7 @@ function renderSelectedItem() {
     el.detailPanel.classList.add('hidden');
     document.body.classList.remove('modal-open');
     el.detailChartResetZoom.disabled = true;
-    [el.detailWikiLink, el.detailWikiLinkSecondary].forEach((link) => link?.classList.add('hidden'));
+    el.detailWikiLink?.classList.add('hidden');
     return;
   }
 
@@ -1361,16 +1360,15 @@ function renderSelectedItem() {
   el.detailChartVolume.checked = state.chartShowVolume;
   el.detailTitle.textContent = item.name;
   const wikiUrl = getWikiUrl(item);
-  [el.detailWikiLink, el.detailWikiLinkSecondary].forEach((link) => {
-    if (!link) return;
+  if (el.detailWikiLink) {
     if (wikiUrl) {
-      link.href = wikiUrl;
-      link.classList.remove('hidden');
+      el.detailWikiLink.href = wikiUrl;
+      el.detailWikiLink.classList.remove('hidden');
     } else {
-      link.removeAttribute('href');
-      link.classList.add('hidden');
+      el.detailWikiLink.removeAttribute('href');
+      el.detailWikiLink.classList.add('hidden');
     }
-  });
+  }
   el.detailSubtitle.textContent = item.members ? 'Members item' : 'Free-to-play item';
   if (item.iconUrl) {
     el.detailIcon.src = item.iconUrl;
