@@ -394,6 +394,8 @@ tbody tr.is-selected {
   background: #020617;
   border-radius: 0.5rem;
   border: 1px solid #1e293b;
+  cursor: crosshair;
+  user-select: none;
 }
 
 .detail-chart-legend {

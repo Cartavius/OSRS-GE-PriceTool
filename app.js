@@ -63,11 +63,14 @@ const state = {
   selectedPreset: '',
   selectedItemId: null,
   snapshots: {},
+  ohlcSeries: {},
   historyLoadingItemId: null,
   chartRange: '30d',
   chartMode: 'line',
   chartShowVolume: true,
   chartGeometry: null,
+  chartZoomRange: null,
+  chartBrush: null,
 };
 
 const el = {
@@ -116,6 +119,7 @@ const el = {
   detailChartRange: document.getElementById('detailChartRange'),
   detailChartMode: document.getElementById('detailChartMode'),
   detailChartVolume: document.getElementById('detailChartVolume'),
+  detailChartResetZoom: document.getElementById('detailChartResetZoom'),
 };
 
 const fmtNumber = new Intl.NumberFormat();
@@ -446,6 +450,9 @@ function renderRowCell(tr, text, className = '') {
 }
 
 function selectItem(itemId) {
+  if (state.selectedItemId !== itemId) {
+    state.chartZoomRange = null;
+  }
   state.selectedItemId = itemId;
   renderTable();
   renderSelectedItem();
@@ -565,6 +572,34 @@ async function fetchItemHistory(itemId, { forceRefresh = false } = {}) {
   const payload = await response.json();
   const entries = Array.isArray(payload?.entries) ? payload.entries : [];
   state.snapshots[key] = entries;
+  return entries;
+}
+
+function getChartBucketSeconds() {
+  if (state.chartRange === '24h') return 5 * 60;
+  if (state.chartRange === '7d') return 60 * 60;
+  if (state.chartRange === '30d') return 6 * 60 * 60;
+  if (state.chartRange === '90d') return 12 * 60 * 60;
+  return 24 * 60 * 60;
+}
+
+async function fetchItemOhlcHistory(itemId, { forceRefresh = false } = {}) {
+  const bucketSeconds = getChartBucketSeconds();
+  const key = `${itemId}:${bucketSeconds}`;
+  if (!forceRefresh && Array.isArray(state.ohlcSeries[key])) {
+    return state.ohlcSeries[key];
+  }
+
+  const response = await fetch(
+    `/history?id=${encodeURIComponent(itemId)}&limit=10000&aggregate=ohlc&bucket_seconds=${bucketSeconds}`
+  );
+  if (!response.ok) {
+    throw new Error(`OHLC history request failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+  state.ohlcSeries[key] = entries;
   return entries;
 }
 
@@ -703,8 +738,7 @@ function renderDetailStats(container, rows) {
   });
 }
 
-function getChartEntries(itemId) {
-  const entries = state.snapshots[String(itemId)] || [];
+function filterEntriesByRange(entries) {
   const rangeMs = CHART_RANGE_MS[state.chartRange] ?? null;
   if (!rangeMs || !entries.length) {
     return entries;
@@ -718,6 +752,24 @@ function getChartEntries(itemId) {
   const minTs = latestTs - rangeMs;
   const filtered = entries.filter((entry) => typeof entry.ts === 'number' && entry.ts >= minTs);
   return filtered.length ? filtered : entries.slice(-Math.min(entries.length, 2));
+}
+
+function filterEntriesByZoom(entries) {
+  if (!state.chartZoomRange || !entries.length) {
+    return entries;
+  }
+
+  const minTs = Math.min(state.chartZoomRange.startTs, state.chartZoomRange.endTs);
+  const maxTs = Math.max(state.chartZoomRange.startTs, state.chartZoomRange.endTs);
+  const filtered = entries.filter((entry) => typeof entry.ts === 'number' && entry.ts >= minTs && entry.ts <= maxTs);
+  return filtered.length >= 2 ? filtered : entries;
+}
+
+function getChartEntries(itemId) {
+  const baseEntries = state.chartMode === 'candles'
+    ? state.ohlcSeries[`${itemId}:${getChartBucketSeconds()}`] || []
+    : state.snapshots[String(itemId)] || [];
+  return filterEntriesByZoom(filterEntriesByRange(baseEntries));
 }
 
 function appendSvgText(svg, { x, y, text, fill = '#94a3b8', anchor = 'start', size = '10' }) {
@@ -738,6 +790,7 @@ function averageOf(values) {
 }
 
 function getMidPrice(entry) {
+  if (typeof entry.close === 'number') return entry.close;
   if (typeof entry.high === 'number' && typeof entry.low === 'number') {
     return (entry.high + entry.low) / 2;
   }
@@ -747,17 +800,20 @@ function getMidPrice(entry) {
 }
 
 function normalizeChartEntry(entry) {
-  const mid = getMidPrice(entry);
+  const open = typeof entry.open === 'number' ? entry.open : getMidPrice(entry);
+  const close = typeof entry.close === 'number' ? entry.close : getMidPrice(entry);
+  const high = typeof entry.high === 'number' ? entry.high : close;
+  const low = typeof entry.low === 'number' ? entry.low : close;
   return {
     ts: entry.ts,
-    high: entry.high,
-    low: entry.low,
+    high,
+    low,
     volume: entry.volume,
-    open: mid,
-    close: mid,
-    candleHigh: mid,
-    candleLow: mid,
-    sourceCount: 1,
+    open,
+    close,
+    candleHigh: typeof entry.high === 'number' ? entry.high : close,
+    candleLow: typeof entry.low === 'number' ? entry.low : close,
+    sourceCount: entry.sample_count ?? entry.sourceCount ?? 1,
   };
 }
 
@@ -801,7 +857,7 @@ function getRenderableChartData(itemId) {
 function renderChartLegend() {
   const parts = state.chartMode === 'candles'
     ? [
-        '<span><i class="legend-swatch legend-swatch-mid"></i>Derived candle body</span>',
+        '<span><i class="legend-swatch legend-swatch-mid"></i>Observed OHLC bars</span>',
         state.chartShowVolume ? '<span><i class="legend-swatch legend-swatch-volume"></i>24h volume overlay</span>' : '',
       ]
     : [
@@ -814,7 +870,7 @@ function renderChartLegend() {
 
 function updateChartReadout(item, datum) {
   if (!datum) {
-    const modeLabel = state.chartMode === 'candles' ? 'Derived candle view' : 'High/low line view';
+    const modeLabel = state.chartMode === 'candles' ? 'Observed OHLC view' : 'High/low line view';
     el.detailChartReadout.textContent = `${modeLabel}. Hover the chart to inspect exact values.`;
     return;
   }
@@ -825,7 +881,6 @@ function updateChartReadout(item, datum) {
     segments.push(`High ${formatCoins(datum.candleHigh)}`);
     segments.push(`Low ${formatCoins(datum.candleLow)}`);
     segments.push(`Close ${formatCoins(datum.close)}`);
-    segments.push('Derived from snapshot mid-prices');
   } else {
     segments.push(`High ${formatCoins(datum.high)}`);
     segments.push(`Low ${formatCoins(datum.low)}`);
@@ -932,12 +987,16 @@ function drawCandleChartSeries(svg, entries, getX, getPriceY, hoverGroup) {
 }
 
 function renderHistoryChart(item) {
-  const allEntries = state.snapshots[String(item.id)] || [];
+  const allEntries = state.chartMode === 'candles'
+    ? state.ohlcSeries[`${item.id}:${getChartBucketSeconds()}`] || []
+    : state.snapshots[String(item.id)] || [];
+  const entryLabel = state.chartMode === 'candles' ? 'bars' : 'snapshots';
   const { filteredEntries, renderEntries } = getRenderableChartData(item.id);
   el.detailChart.textContent = '';
   state.chartGeometry = null;
   renderChartLegend();
   updateChartReadout(item, null);
+  el.detailChartResetZoom.disabled = !state.chartZoomRange;
 
   if (renderEntries.length < 2) {
     el.detailChart.classList.add('hidden');
@@ -945,7 +1004,7 @@ function renderHistoryChart(item) {
     if (state.historyLoadingItemId === item.id) {
       el.detailHistoryStatus.textContent = 'Loading server history...';
     } else {
-      el.detailHistoryStatus.textContent = renderEntries.length === 1 ? '1 stored snapshot in this range' : 'No stored snapshots yet';
+      el.detailHistoryStatus.textContent = renderEntries.length === 1 ? `1 stored ${entryLabel.slice(0, -1)} in this range` : `No stored ${entryLabel} yet`;
     }
     return;
   }
@@ -957,7 +1016,7 @@ function renderHistoryChart(item) {
   if (!priceValues.length) {
     el.detailChart.classList.add('hidden');
     el.detailChartEmpty.classList.remove('hidden');
-    el.detailHistoryStatus.textContent = `${renderEntries.length} stored snapshots without price points`;
+    el.detailHistoryStatus.textContent = `${renderEntries.length} stored ${entryLabel} without price points`;
     return;
   }
 
@@ -1044,6 +1103,15 @@ function renderHistoryChart(item) {
       rect.setAttribute('fill', 'rgba(34, 197, 94, 0.35)');
       el.detailChart.appendChild(rect);
     });
+    [maxVolume, maxVolume / 2, 0].forEach((tickValue) => {
+      const y = tickValue === 0 ? height - paddingBottom : getVolumeY(tickValue);
+      appendSvgText(el.detailChart, {
+        x: width - paddingRight + 2,
+        y: y + 3,
+        text: formatVolume(tickValue),
+        fill: '#22c55e',
+      });
+    });
   }
 
   const hoverGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -1060,6 +1128,13 @@ function renderHistoryChart(item) {
   } else {
     hoverArtifacts = drawLineChartSeries(el.detailChart, renderEntries, getX, getPriceY, hoverGroup);
   }
+
+  const brushRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  brushRect.setAttribute('fill', 'rgba(56, 189, 248, 0.18)');
+  brushRect.setAttribute('stroke', '#38bdf8');
+  brushRect.setAttribute('stroke-width', '1.25');
+  brushRect.setAttribute('display', 'none');
+  el.detailChart.appendChild(brushRect);
 
   el.detailChart.appendChild(hoverGroup);
 
@@ -1096,9 +1171,15 @@ function renderHistoryChart(item) {
     data: renderEntries,
     getX,
     getPriceY,
+    minTs,
+    maxTs,
+    width,
+    paddingLeft,
+    paddingRight,
     hoverGroup,
     hoverLine,
     hoverArtifacts,
+    brushRect,
     priceTop: paddingTop,
     priceBottom,
     height,
@@ -1108,7 +1189,8 @@ function renderHistoryChart(item) {
   el.detailChart.classList.remove('hidden');
   el.detailChartEmpty.classList.add('hidden');
   const compressionNote = renderEntries.length !== filteredEntries.length ? ` | downsampled to ${renderEntries.length}` : '';
-  el.detailHistoryStatus.textContent = `${filteredEntries.length} shown / ${allEntries.length} stored snapshots${compressionNote}`;
+  const zoomNote = state.chartZoomRange ? ' | zoomed' : '';
+  el.detailHistoryStatus.textContent = `${filteredEntries.length} shown / ${allEntries.length} stored ${entryLabel}${compressionNote}${zoomNote}`;
 }
 
 function renderSelectedItem() {
@@ -1116,6 +1198,7 @@ function renderSelectedItem() {
   if (!item) {
     el.detailPanel.classList.add('hidden');
     document.body.classList.remove('modal-open');
+    el.detailChartResetZoom.disabled = true;
     return;
   }
 
@@ -1175,6 +1258,18 @@ function handleChartPointerMove(event) {
     return;
   }
 
+  if (state.chartBrush) {
+    const currentX = ((event.clientX - bounds.left) / bounds.width) * geometry.width;
+    const minX = Math.max(geometry.paddingLeft, Math.min(state.chartBrush.startX, currentX));
+    const maxX = Math.min(geometry.width - geometry.paddingRight, Math.max(state.chartBrush.startX, currentX));
+    geometry.brushRect.setAttribute('display', 'block');
+    geometry.brushRect.setAttribute('x', String(minX));
+    geometry.brushRect.setAttribute('y', String(geometry.priceTop));
+    geometry.brushRect.setAttribute('width', String(Math.max(1, maxX - minX)));
+    geometry.brushRect.setAttribute('height', String((geometry.height - geometry.paddingBottom) - geometry.priceTop));
+    return;
+  }
+
   const svgX = ((event.clientX - bounds.left) / bounds.width) * 640;
   let nearest = null;
   let nearestDistance = Number.POSITIVE_INFINITY;
@@ -1228,9 +1323,57 @@ function handleChartPointerMove(event) {
   }
 }
 
+function handleChartPointerDown(event) {
+  const geometry = state.chartGeometry;
+  if (!geometry || state.selectedItemId === null || geometry.itemId !== state.selectedItemId) {
+    return;
+  }
+  event.preventDefault();
+
+  const bounds = el.detailChart.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) {
+    return;
+  }
+
+  const svgX = ((event.clientX - bounds.left) / bounds.width) * geometry.width;
+  const clampedX = Math.max(geometry.paddingLeft, Math.min(geometry.width - geometry.paddingRight, svgX));
+  state.chartBrush = { startX: clampedX };
+  geometry.brushRect.setAttribute('display', 'block');
+  geometry.brushRect.setAttribute('x', String(clampedX));
+  geometry.brushRect.setAttribute('y', String(geometry.priceTop));
+  geometry.brushRect.setAttribute('width', '1');
+  geometry.brushRect.setAttribute('height', String((geometry.height - geometry.paddingBottom) - geometry.priceTop));
+}
+
+function handleChartPointerUp() {
+  const geometry = state.chartGeometry;
+  const brush = state.chartBrush;
+  state.chartBrush = null;
+  if (!geometry || !brush) {
+    return;
+  }
+
+  const width = Number(geometry.brushRect.getAttribute('width') || '0');
+  if (width < 8) {
+    geometry.brushRect.setAttribute('display', 'none');
+    return;
+  }
+
+  const startX = Number(geometry.brushRect.getAttribute('x') || geometry.paddingLeft);
+  const endX = startX + width;
+  const rangeWidth = geometry.width - geometry.paddingLeft - geometry.paddingRight;
+  const startTs = geometry.minTs + (((startX - geometry.paddingLeft) / rangeWidth) * (geometry.maxTs - geometry.minTs));
+  const endTs = geometry.minTs + (((endX - geometry.paddingLeft) / rangeWidth) * (geometry.maxTs - geometry.minTs));
+  geometry.brushRect.setAttribute('display', 'none');
+  state.chartZoomRange = { startTs, endTs };
+  renderSelectedItem();
+}
+
 function closeDetailPanel() {
   state.selectedItemId = null;
   state.chartGeometry = null;
+  state.chartBrush = null;
+  state.chartZoomRange = null;
   el.detailPanel.classList.add('hidden');
   document.body.classList.remove('modal-open');
   renderTable();
@@ -1241,16 +1384,34 @@ async function loadSelectedItemHistory(itemId, { forceRefresh = false } = {}) {
   state.historyLoadingItemId = itemId;
   renderSelectedItem();
   try {
-    await fetchItemHistory(itemId, { forceRefresh });
+    await Promise.all([
+      fetchItemHistory(itemId, { forceRefresh }),
+      fetchItemOhlcHistory(itemId, { forceRefresh }),
+    ]);
   } catch (error) {
     console.error(error);
     state.snapshots[String(itemId)] = [];
+    state.ohlcSeries[`${itemId}:${getChartBucketSeconds()}`] = [];
   } finally {
     state.historyLoadingItemId = null;
     if (state.selectedItemId === itemId) {
       renderSelectedItem();
     }
   }
+}
+
+async function refreshSelectedChartData() {
+  if (state.selectedItemId === null) return;
+  try {
+    if (state.chartMode === 'candles') {
+      await fetchItemOhlcHistory(state.selectedItemId, { forceRefresh: false });
+    } else {
+      await fetchItemHistory(state.selectedItemId, { forceRefresh: false });
+    }
+  } catch (error) {
+    console.error(error);
+  }
+  renderSelectedItem();
 }
 
 async function loadData({ forceRefresh = false } = {}) {
@@ -1399,16 +1560,23 @@ function setupEvents() {
   el.detailBackdrop.addEventListener('click', closeDetailPanel);
   el.detailChartRange.addEventListener('change', () => {
     state.chartRange = el.detailChartRange.value;
-    renderSelectedItem();
+    state.chartZoomRange = null;
+    refreshSelectedChartData();
   });
   el.detailChartMode.addEventListener('change', () => {
     state.chartMode = el.detailChartMode.value;
-    renderSelectedItem();
+    state.chartZoomRange = null;
+    refreshSelectedChartData();
   });
   el.detailChartVolume.addEventListener('change', () => {
     state.chartShowVolume = el.detailChartVolume.checked;
     renderSelectedItem();
   });
+  el.detailChartResetZoom.addEventListener('click', () => {
+    state.chartZoomRange = null;
+    renderSelectedItem();
+  });
+  el.detailChart.addEventListener('mousedown', handleChartPointerDown);
   el.detailChart.addEventListener('mousemove', handleChartPointerMove);
   el.detailChart.addEventListener('mouseleave', () => {
     const item = state.items.find((candidate) => candidate.id === state.selectedItemId);
@@ -1416,6 +1584,7 @@ function setupEvents() {
       clearChartHover(item);
     }
   });
+  document.addEventListener('mouseup', handleChartPointerUp);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && state.selectedItemId !== null) {
       closeDetailPanel();

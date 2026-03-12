@@ -328,6 +328,70 @@ class Handler(SimpleHTTPRequestHandler):
         ]
 
     @classmethod
+    def load_item_history_ohlc(cls, item_id, limit, bucket_seconds):
+        raw_entries = cls.load_item_history(item_id, limit)
+        buckets = []
+        current_bucket = None
+
+        for entry in raw_entries:
+            ts_ms = entry["ts"]
+            ts_seconds = ts_ms // 1000
+            bucket_start = ts_seconds - (ts_seconds % bucket_seconds)
+            mid_price = None
+            high = entry.get("high")
+            low = entry.get("low")
+            if isinstance(high, (int, float)) and isinstance(low, (int, float)):
+                mid_price = (high + low) / 2
+            elif isinstance(high, (int, float)):
+                mid_price = high
+            elif isinstance(low, (int, float)):
+                mid_price = low
+
+            if current_bucket is None or current_bucket["bucket_start"] != bucket_start:
+                if current_bucket is not None:
+                    buckets.append(current_bucket)
+                current_bucket = {
+                    "bucket_start": bucket_start,
+                    "open": mid_price,
+                    "high": mid_price,
+                    "low": mid_price,
+                    "close": mid_price,
+                    "volume_sum": 0,
+                    "volume_count": 0,
+                    "sample_count": 0,
+                }
+
+            current_bucket["sample_count"] += 1
+            if isinstance(entry.get("volume"), (int, float)):
+                current_bucket["volume_sum"] += entry["volume"]
+                current_bucket["volume_count"] += 1
+
+            if mid_price is None:
+                continue
+
+            if current_bucket["open"] is None:
+                current_bucket["open"] = mid_price
+            current_bucket["close"] = mid_price
+            current_bucket["high"] = mid_price if current_bucket["high"] is None else max(current_bucket["high"], mid_price)
+            current_bucket["low"] = mid_price if current_bucket["low"] is None else min(current_bucket["low"], mid_price)
+
+        if current_bucket is not None:
+            buckets.append(current_bucket)
+
+        return [
+            {
+                "ts": bucket["bucket_start"] * 1000,
+                "open": round(bucket["open"]) if bucket["open"] is not None else None,
+                "high": round(bucket["high"]) if bucket["high"] is not None else None,
+                "low": round(bucket["low"]) if bucket["low"] is not None else None,
+                "close": round(bucket["close"]) if bucket["close"] is not None else None,
+                "volume": round(bucket["volume_sum"] / bucket["volume_count"]) if bucket["volume_count"] else None,
+                "sample_count": bucket["sample_count"],
+            }
+            for bucket in buckets
+        ]
+
+    @classmethod
     def _load_cached_icon(cls, icon_name):
         body_path, meta_path = cls._icon_cache_paths(icon_name)
         if not body_path.exists() or not meta_path.exists():
@@ -611,10 +675,15 @@ class Handler(SimpleHTTPRequestHandler):
         params = parse_qs(query)
         item_id_value = params.get("id", [None])[0]
         limit_value = params.get("limit", [1000])[0]
+        aggregate = params.get("aggregate", ["raw"])[0]
+        bucket_seconds_value = params.get("bucket_seconds", [3600])[0]
 
         try:
             item_id = coerce_int(item_id_value, "id")
             limit = coerce_int(limit_value, "limit")
+            bucket_seconds = coerce_int(bucket_seconds_value, "bucket_seconds", minimum=60)
+            if aggregate not in {"raw", "ohlc"}:
+                raise ValueError(f"Invalid aggregate value: {aggregate!r}")
         except ValueError as error:
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -627,7 +696,10 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         try:
-            entries = self.load_item_history(item_id, min(limit, 5000))
+            if aggregate == "ohlc":
+                entries = self.load_item_history_ohlc(item_id, min(limit, 10000), bucket_seconds)
+            else:
+                entries = self.load_item_history(item_id, min(limit, 5000))
         except sqlite3.DatabaseError as error:
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
@@ -639,7 +711,14 @@ class Handler(SimpleHTTPRequestHandler):
                     raise
             return
 
-        body = json.dumps({"item_id": item_id, "entries": entries}).encode("utf-8")
+        body = json.dumps(
+            {
+                "item_id": item_id,
+                "aggregate": aggregate,
+                "bucket_seconds": bucket_seconds if aggregate == "ohlc" else None,
+                "entries": entries,
+            }
+        ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
