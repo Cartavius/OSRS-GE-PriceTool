@@ -12,5 +12,5 @@
   "icon_debug": false,
   "history_tracking": true,
   "history_db_path": ".price-history/osrs-ge-history.sqlite3",
-  "history_poll_interval_seconds": 60
+  "history_poll_interval_seconds": 300
 }

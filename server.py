@@ -31,7 +31,7 @@ DEFAULT_SETTINGS = {
     "icon_debug": False,
     "history_tracking": True,
     "history_db_path": ".price-history/osrs-ge-history.sqlite3",
-    "history_poll_interval_seconds": 60,
+    "history_poll_interval_seconds": 300,
 }
 
 
@@ -65,7 +65,7 @@ class Handler(SimpleHTTPRequestHandler):
     }
     history_tracking = True
     history_db_path = Path(".price-history/osrs-ge-history.sqlite3")
-    history_poll_interval_seconds = 60
+    history_poll_interval_seconds = 300
     history_db_lock = threading.Lock()
     history_worker_started = False
     index_pages = ["Index.html", "index.html"]

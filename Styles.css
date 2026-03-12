@@ -215,8 +215,21 @@ th {
 }
 
 .header-content {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
   padding-right: 0.65rem;
+}
+
+.sort-indicator {
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.sort-indicator.is-active {
+  color: #e2e8f0;
 }
 
 .column-resizer {

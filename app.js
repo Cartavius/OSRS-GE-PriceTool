@@ -8,7 +8,7 @@ const FAVORITES_KEY = 'osrs_ge_favorites_v1';
 const PRESETS_KEY = 'osrs_ge_presets_v1';
 const COLUMN_ORDER_KEY = 'osrs_ge_column_order_v1';
 const COLUMN_WIDTHS_KEY = 'osrs_ge_column_widths_v1';
-const AUTO_REFRESH_MS = 60 * 1000;
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
 const CACHE_TTL_MS = {
   mapping: 24 * 60 * 60 * 1000,
   latest: 60 * 1000,
@@ -404,7 +404,17 @@ function renderHeaders() {
 
     const headerContent = document.createElement('div');
     headerContent.className = 'header-content';
-    headerContent.textContent = column.label;
+    const label = document.createElement('span');
+    label.textContent = column.label;
+    headerContent.appendChild(label);
+    if (column.sortable !== false) {
+      const arrow = document.createElement('span');
+      arrow.className = `sort-indicator${state.sortKey === column.key ? ' is-active' : ''}`;
+      arrow.textContent = state.sortKey === column.key
+        ? (state.sortDirection === 'asc' ? '▲' : '▼')
+        : '↕';
+      headerContent.appendChild(arrow);
+    }
     th.appendChild(headerContent);
 
     const resizeHandle = document.createElement('button');
