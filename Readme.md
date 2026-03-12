@@ -82,6 +82,43 @@ Open:
 http://localhost:8080
 ```
 
+Quick smoke test on Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
+```
+
+This starts the app on a temporary local port, checks:
+
+- `/`
+- `/history/stats`
+
+and then stops the server automatically.
+
+To include a live upstream API check as well:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -IncludeUpstream
+```
+
+Manual UI preview on Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\preview-ui.ps1
+```
+
+That keeps the app running on:
+
+```text
+http://127.0.0.1:8080/
+```
+
+To auto-open the browser:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\preview-ui.ps1 -OpenBrowser
+```
+
 ### Docker
 
 ```bash
@@ -98,6 +135,24 @@ Stop:
 
 ```bash
 docker compose down
+```
+
+Docker smoke test on Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test-docker.ps1
+```
+
+To leave the container running after the check:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test-docker.ps1 -KeepRunning
+```
+
+Docker UI preview on Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\preview-ui.ps1 -Mode docker
 ```
 
 ## Updating a Deployment
