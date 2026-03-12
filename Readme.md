@@ -1,51 +1,76 @@
 # OSRS GE Price Tool
 
-OSRS GE Price Tool is a local web app for browsing Old School RuneScape Grand Exchange data with persistent market history, configurable charting, favorites, presets, and a local proxy for the OSRS Wiki price API.
+OSRS GE Price Tool is a local web application for exploring Old School RuneScape Grand Exchange prices, trade volume, and item profitability with persistent historical storage.
 
-## What It Does
+It combines:
+- live OSRS Wiki market data
+- local icon mirroring
+- persistent SQLite history
+- long-range charting with rollups
+- a Docker-friendly deployment model for always-on use
 
-- Loads item mapping, live prices, and trade volume from the OSRS Wiki real-time price API
-- Filters and sorts the item table by price, profit, liquidity, membership status, and favorites
-- Stores favorites and saved filter presets in browser `localStorage`
-- Calculates High Alch profit and tax-aware flip profit
-- Opens item details in an in-page modal instead of navigating away from the table
-- Persists price history on the server in SQLite for long-term charting
-- Caches item icons locally and keeps them on disk by default
+## Features
 
-## Current Feature Set
-
-- Live table with:
-  - sortable columns
+- Live item table with:
+  - search and filters
   - favorites
   - saved presets
-  - column visibility controls
+  - sortable columns
+  - draggable and resizable columns
+  - configurable visible columns
   - pagination
-  - `5m`, `1h`, and `24h` volume views
-- Detail modal with:
+- Profit calculations:
+  - High Alch profit
+  - GE tax-aware flip profit
+- Item detail modal with:
   - market stats
   - profitability stats
+  - OSRS Wiki link
   - persistent history chart
   - range selection: `24h`, `7d`, `30d`, `90d`, `1y`, `All`
-  - chart modes: line view and observed OHLC bars
+  - line and observed OHLC views
   - volume overlay
   - hover readout
-  - brush zoom and reset zoom
-- Local server features:
-  - `/api/v1/osrs/*` proxy with custom `User-Agent`
-  - `/icon` local icon serving and mirroring
-  - `/icon/stats` cache/rate-limit diagnostics
-  - `/history` raw and aggregated history access
-- Docker support for local and homelab deployment
+  - brush zoom
+- Persistent market history with:
+  - raw snapshots
+  - hourly rollups
+  - daily rollups
+  - retention controls
+- Storage diagnostics page:
+  - current DB size
+  - projected 1-year growth
+  - raw/hourly/daily row counts
+  - retention settings
+
+## Data Sources
+
+- OSRS Wiki real-time prices API
+  - <https://oldschool.runescape.wiki/w/RuneScape:Real-time_Prices>
+- OSRS Wiki item pages via item ID lookup
+
+## Project Structure
+
+- `Index.html` - main application UI
+- `Styles.css` - shared styles for the app and stats page
+- `app.js` - frontend state, filtering, table behavior, modal behavior, and charting
+- `stats.html` - storage stats page
+- `stats.js` - storage stats page logic
+- `server.py` - local server, API proxy, icon cache, persistent history tracking, rollups
+- `server.config.json` - default runtime configuration
+- `Dockerfile` - container image definition
+- `docker-compose.yml` - local/container deployment
+- `osrs_ge_tool.py` - single-file launcher variant
 
 ## Requirements
 
-- Python `3.10+` for direct runs
+- Python `3.10+` for direct local runs
 - Docker Engine / Docker Desktop for containerized runs
-- Modern browser
+- A modern browser
 
-## Quick Start
+## Running Locally
 
-### Local Python Run
+### Python
 
 ```bash
 python3 server.py
@@ -57,7 +82,7 @@ Open:
 http://localhost:8080
 ```
 
-### Docker Run
+### Docker
 
 ```bash
 docker compose up -d --build
@@ -69,25 +94,15 @@ Open:
 http://localhost:8080
 ```
 
-Stop it:
+Stop:
 
 ```bash
 docker compose down
 ```
 
-## Docker Notes
+## Updating a Deployment
 
-The compose setup persists both icon cache and market history:
-
-- `./.icon-cache`
-- `./.price-history`
-
-That means:
-
-- icons stay cached across container rebuilds
-- price history continues accumulating over time
-
-For a deployed host or VM, the normal update flow is:
+For a VM or other long-running host:
 
 ```bash
 git pull
@@ -96,109 +111,121 @@ docker compose up -d --build
 
 ## Configuration
 
-`server.py` loads defaults from `server.config.json`.
-
-Precedence:
+`server.py` reads settings with this precedence:
 
 1. CLI arguments
 2. `server.config.json`
 3. built-in defaults
 
-Run with a different config:
+Use an alternate config file:
 
 ```bash
 python3 server.py --config my-config.json
 ```
 
-Current default behavior includes:
+Current defaults include:
 
 - icon mirroring enabled
-- icon TTL disabled (`0`, treated as never stale)
-- persistent market history tracking enabled
-- history DB at `.price-history/osrs-ge-history.sqlite3`
+- icon cache treated as permanent
+- persistent market history enabled
 - history polling every `300` seconds
+- raw history retention: `180` days
+- hourly rollup retention: `730` days
+- daily rollup retention: forever
 
-## Runtime Endpoints
+## Storage Model
 
-### Icon Stats
-
-```text
-/icon/stats
-```
-
-Shows:
-
-- cache directory
-- cached icon count
-- rate-limit usage
-- refresh queue state
-- icon fetch counters
-
-### History
-
-Raw snapshot history:
-
-```text
-/history?id=<item_id>&limit=<rows>
-```
-
-Observed OHLC aggregation:
-
-```text
-/history?id=<item_id>&limit=<rows>&aggregate=ohlc&bucket_seconds=<seconds>
-```
-
-The OHLC output is derived from the app's stored snapshot history. It is not an official exchange candlestick feed.
-
-## Data Storage
-
-### Browser Storage
+### Browser storage
 
 Stored in `localStorage`:
 
 - favorites
 - saved presets
+- column order
+- column widths
 - short-lived API cache entries
 
-### Server Storage
+### Server storage
 
 Stored on disk:
 
 - icon cache in `.icon-cache/`
-- price history database in `.price-history/`
+- history database in `.price-history/osrs-ge-history.sqlite3`
 
-## Project Files
+### History retention
 
-- `Index.html`: application markup
-- `Styles.css`: application styles
-- `app.js`: frontend state, filtering, modal, charting, and history interactions
-- `server.py`: local HTTP server, API proxy, icon cache, and persistent history tracker
-- `server.config.json`: runtime defaults
-- `Dockerfile`: container image definition
-- `docker-compose.yml`: local container orchestration
-- `osrs_ge_tool.py`: single-file launcher variant
+The server stores:
 
-## Operational Notes
+- raw snapshots for recent analysis
+- hourly rollups for medium-term history
+- daily rollups for long-term history
 
-- The detail modal does not auto-open on page load; it opens only from an explicit item click.
-- If a detail modal is already open during refresh, the selected item's history reloads in place.
-- Long ranges may be downsampled in the chart to keep rendering responsive.
-- Candle mode is based on observed history buckets produced by this tool, not official historical bars.
-- Icon cache is intended to be durable. If you want a full icon refresh, clear `.icon-cache/` manually or change config behavior.
+The chart automatically selects the right source:
+
+- `24h`, `7d` -> raw history
+- `30d`, `90d` -> hourly rollups
+- `1y`, `All` -> daily rollups
+
+This keeps recent ranges detailed and long ranges efficient.
+
+## Endpoints
+
+### Main UI
+
+- `/`
+- `/Index.html`
+
+### Storage stats page
+
+- `/stats.html`
+
+### API proxy
+
+- `/api/v1/osrs/latest`
+- `/api/v1/osrs/volumes`
+- `/api/v1/osrs/5m`
+- `/api/v1/osrs/1h`
+- `/api/v1/osrs/mapping`
+
+### Icon endpoints
+
+- `/icon?name=<icon_name>`
+- `/icon/stats`
+
+### History endpoints
+
+Raw or rolled-up price history:
+
+```text
+/history?id=<item_id>&limit=<rows>&source=raw|hourly|daily
+```
+
+Observed OHLC history:
+
+```text
+/history?id=<item_id>&limit=<rows>&aggregate=ohlc&source=raw|hourly|daily&bucket_seconds=<seconds>
+```
+
+History storage stats:
+
+```text
+/history/stats
+```
+
+## Notes
+
+- Observed OHLC values are derived from this tool's stored snapshots. They are not an official candlestick feed from Jagex or the OSRS Wiki.
+- The icon cache is intended to be durable. If you want to refresh cached icons, clear `.icon-cache/`.
+- The storage stats page reports current and projected history growth using the live database contents.
 
 ## Troubleshooting
 
-- If the app cannot load market data, inspect browser requests to `/api/v1/osrs/*`.
+- If market data is missing, inspect requests to `/api/v1/osrs/*`.
 - If icons are missing, inspect `/icon/stats`.
-- If history is not building, check container or server logs for `[history]` lines.
-- If Docker is running but the app is unavailable, rebuild:
+- If history is not updating, check server/container logs for `[history]`.
+- If the stats page is missing in Docker, rebuild the image:
 
 ```bash
+docker compose down
 docker compose up -d --build
 ```
-
-## Data Source
-
-OSRS Wiki real-time prices API:
-
-<https://oldschool.runescape.wiki/w/RuneScape:Real-time_Prices>
