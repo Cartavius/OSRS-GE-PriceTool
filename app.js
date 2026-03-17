@@ -9,6 +9,8 @@ const PRESETS_KEY = 'osrs_ge_presets_v1';
 const COLUMN_ORDER_KEY = 'osrs_ge_column_order_v1';
 const COLUMN_WIDTHS_KEY = 'osrs_ge_column_widths_v1';
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
+const HISTORY_CACHE_TTL_MS = 60 * 1000;
+const HISTORY_CACHE_MAX_ENTRIES = 48;
 const CACHE_TTL_MS = {
   mapping: 24 * 60 * 60 * 1000,
   latest: 60 * 1000,
@@ -64,8 +66,8 @@ const state = {
   presets: {},
   selectedPreset: '',
   selectedItemId: null,
-  snapshots: {},
-  ohlcSeries: {},
+  snapshots: new Map(),
+  ohlcSeries: new Map(),
   isLoadingData: false,
   historyLoadingItemId: null,
   chartRange: '30d',
@@ -354,9 +356,19 @@ function sortItems(items) {
 function applyColumnWidth(cell, key) {
   const width = state.columnWidths[key];
   if (!width) return;
+  applyExplicitColumnWidth(cell, width);
+}
+
+function applyExplicitColumnWidth(cell, width) {
   cell.style.width = `${width}px`;
   cell.style.minWidth = `${width}px`;
   cell.style.maxWidth = `${width}px`;
+}
+
+function applyColumnWidthToVisibleCells(key, width) {
+  document.querySelectorAll(`[data-column-key="${key}"]`).forEach((cell) => {
+    applyExplicitColumnWidth(cell, width);
+  });
 }
 
 function handleColumnDragStart(event) {
@@ -391,15 +403,28 @@ function beginColumnResize(event) {
   if (!key || !header) return;
   const startX = event.clientX;
   const startWidth = header.getBoundingClientRect().width;
+  let pendingWidth = startWidth;
+  let frameId = null;
+
+  function flushWidth() {
+    frameId = null;
+    applyColumnWidthToVisibleCells(key, pendingWidth);
+  }
 
   function onMove(moveEvent) {
-    const nextWidth = Math.max(88, Math.round(startWidth + (moveEvent.clientX - startX)));
-    state.columnWidths[key] = nextWidth;
-    saveColumnWidths();
-    renderTable();
+    pendingWidth = Math.max(88, Math.round(startWidth + (moveEvent.clientX - startX)));
+    state.columnWidths[key] = pendingWidth;
+    if (frameId === null) {
+      frameId = window.requestAnimationFrame(flushWidth);
+    }
   }
 
   function onUp() {
+    if (frameId !== null) {
+      window.cancelAnimationFrame(frameId);
+      flushWidth();
+    }
+    saveColumnWidths();
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
   }
@@ -413,6 +438,7 @@ function renderHeaders() {
   getOrderedColumns().forEach((column) => {
     const th = document.createElement('th');
     th.dataset.key = column.key;
+    th.dataset.columnKey = column.key;
     th.className = `table-header${column.sortable === false ? ' is-static' : ''}`;
     th.draggable = !column.alwaysVisible || column.key === 'name';
     applyColumnWidth(th, column.key);
@@ -614,7 +640,7 @@ function selectItem(itemId) {
   state.selectedItemId = itemId;
   renderTable();
   renderSelectedItem();
-  loadSelectedItemHistory(itemId, { forceRefresh: true });
+  loadSelectedItemHistory(itemId);
 }
 
 function renderTable() {
@@ -700,6 +726,7 @@ function renderTable() {
     orderedColumns.forEach((column) => {
       const cell = generatedCells[column.key] ?? (column.key === 'name' ? nameTd : null);
       if (!cell) return;
+      cell.dataset.columnKey = column.key;
       applyColumnWidth(cell, column.key);
       if (!state.visibleColumns.has(column.key)) {
         cell.classList.add('hidden-column');
@@ -734,8 +761,9 @@ async function fetchJson(endpoint) {
 async function fetchItemHistory(itemId, { forceRefresh = false } = {}) {
   const source = getChartHistorySource();
   const key = getHistoryCacheKey(itemId, source);
-  if (!forceRefresh && Array.isArray(state.snapshots[key])) {
-    return state.snapshots[key];
+  const cached = getHistoryCacheValue(state.snapshots, key);
+  if (!forceRefresh && cached) {
+    return cached;
   }
 
   const limit = source === 'raw' ? 5000 : 10000;
@@ -746,7 +774,7 @@ async function fetchItemHistory(itemId, { forceRefresh = false } = {}) {
 
   const payload = await response.json();
   const entries = Array.isArray(payload?.entries) ? payload.entries : [];
-  state.snapshots[key] = entries;
+  setHistoryCacheValue(state.snapshots, key, entries);
   return entries;
 }
 
@@ -765,8 +793,9 @@ async function fetchItemOhlcHistory(itemId, { forceRefresh = false } = {}) {
   const source = getChartHistorySource();
   const bucketSeconds = getChartBucketSeconds();
   const key = getOhlcCacheKey(itemId, source, bucketSeconds);
-  if (!forceRefresh && Array.isArray(state.ohlcSeries[key])) {
-    return state.ohlcSeries[key];
+  const cached = getHistoryCacheValue(state.ohlcSeries, key);
+  if (!forceRefresh && cached) {
+    return cached;
   }
 
   const response = await fetch(
@@ -778,8 +807,36 @@ async function fetchItemOhlcHistory(itemId, { forceRefresh = false } = {}) {
 
   const payload = await response.json();
   const entries = Array.isArray(payload?.entries) ? payload.entries : [];
-  state.ohlcSeries[key] = entries;
+  setHistoryCacheValue(state.ohlcSeries, key, entries);
   return entries;
+}
+
+function getHistoryCacheValue(cache, key, { allowStale = false } = {}) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if ((Date.now() - entry.cachedAt) >= HISTORY_CACHE_TTL_MS) {
+    if (allowStale) {
+      return entry.entries;
+    }
+    cache.delete(key);
+    return null;
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry.entries;
+}
+
+function setHistoryCacheValue(cache, key, entries) {
+  cache.delete(key);
+  cache.set(key, {
+    cachedAt: Date.now(),
+    entries,
+  });
+  while (cache.size > HISTORY_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
 }
 
 function getCacheKey(endpoint) {
@@ -951,8 +1008,8 @@ function filterEntriesByZoom(entries) {
 
 function getChartEntries(itemId) {
   const baseEntries = state.chartMode === 'candles'
-    ? state.ohlcSeries[getOhlcCacheKey(itemId)] || []
-    : state.snapshots[getHistoryCacheKey(itemId)] || [];
+    ? (getHistoryCacheValue(state.ohlcSeries, getOhlcCacheKey(itemId), { allowStale: true }) || [])
+    : (getHistoryCacheValue(state.snapshots, getHistoryCacheKey(itemId), { allowStale: true }) || []);
   return filterEntriesByZoom(filterEntriesByRange(baseEntries));
 }
 
@@ -1173,8 +1230,8 @@ function drawCandleChartSeries(svg, entries, getX, getPriceY, hoverGroup) {
 function renderHistoryChart(item) {
   const chartSource = getChartHistorySource();
   const allEntries = state.chartMode === 'candles'
-    ? state.ohlcSeries[getOhlcCacheKey(item.id)] || []
-    : state.snapshots[getHistoryCacheKey(item.id)] || [];
+    ? (getHistoryCacheValue(state.ohlcSeries, getOhlcCacheKey(item.id), { allowStale: true }) || [])
+    : (getHistoryCacheValue(state.snapshots, getHistoryCacheKey(item.id), { allowStale: true }) || []);
   const entryLabel = state.chartMode === 'candles' ? 'bars' : 'snapshots';
   const { filteredEntries, renderEntries } = getRenderableChartData(item.id);
   el.detailChart.textContent = '';
@@ -1593,8 +1650,6 @@ async function loadSelectedItemHistory(itemId, { forceRefresh = false } = {}) {
     ]);
   } catch (error) {
     console.error(error);
-    state.snapshots[getHistoryCacheKey(itemId)] = [];
-    state.ohlcSeries[getOhlcCacheKey(itemId)] = [];
   } finally {
     state.historyLoadingItemId = null;
     if (state.selectedItemId === itemId) {
@@ -1647,7 +1702,7 @@ async function loadData({ forceRefresh = false } = {}) {
     applyFilters();
 
     if (state.selectedItemId !== null) {
-      loadSelectedItemHistory(state.selectedItemId, { forceRefresh: true });
+      loadSelectedItemHistory(state.selectedItemId, { forceRefresh });
     }
   } catch (error) {
     console.error(error);
