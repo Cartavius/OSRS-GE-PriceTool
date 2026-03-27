@@ -286,20 +286,13 @@ class Handler(SimpleHTTPRequestHandler):
         )
 
     @classmethod
-    def rebuild_rollup_table(cls, connection, target_table, bucket_seconds, meta_key):
-        latest_raw_ts_row = connection.execute("SELECT MAX(ts) FROM price_history").fetchone()
-        latest_raw_ts = latest_raw_ts_row[0] if latest_raw_ts_row else None
-        if latest_raw_ts is None:
-            return
+    def _rollup_table_has_rows(cls, connection, table_name):
+        row = connection.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+        return row is not None
 
-        last_rollup_ts = cls._load_meta_int(connection, meta_key)
-        start_ts = None if last_rollup_ts is None else cls._bucket_start(last_rollup_ts, bucket_seconds)
-        filter_sql = ""
-        params = [bucket_seconds, bucket_seconds]
-        if start_ts is not None:
-            filter_sql = "WHERE ts >= ?"
-            params.append(start_ts)
-
+    @classmethod
+    def _rebuild_rollup_table_full(cls, connection, target_table, bucket_seconds):
+        connection.execute(f"DELETE FROM {target_table}")
         query = f"""
             WITH bucketed AS (
                 SELECT
@@ -316,7 +309,6 @@ class Handler(SimpleHTTPRequestHandler):
                         ELSE NULL
                     END AS mid_price
                 FROM price_history
-                {filter_sql}
             ),
             ranked AS (
                 SELECT
@@ -346,7 +338,7 @@ class Handler(SimpleHTTPRequestHandler):
                 FROM ranked
                 GROUP BY item_id, bucket_ts
             )
-            INSERT OR REPLACE INTO {target_table} (
+            INSERT INTO {target_table} (
                 item_id,
                 bucket_ts,
                 open_mid,
@@ -371,7 +363,121 @@ class Handler(SimpleHTTPRequestHandler):
                 sample_count
             FROM aggregated
         """
-        connection.execute(query, params)
+        connection.execute(query, (bucket_seconds, bucket_seconds))
+
+    @classmethod
+    def _merge_rollup_table_incremental(cls, connection, target_table, bucket_seconds, last_rollup_ts):
+        query = f"""
+            WITH bucketed AS (
+                SELECT
+                    item_id,
+                    CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+                    ts,
+                    high,
+                    low,
+                    volume_24h,
+                    CASE
+                        WHEN high IS NOT NULL AND low IS NOT NULL THEN (high + low) / 2.0
+                        WHEN high IS NOT NULL THEN CAST(high AS REAL)
+                        WHEN low IS NOT NULL THEN CAST(low AS REAL)
+                        ELSE NULL
+                    END AS mid_price
+                FROM price_history
+                WHERE ts > ?
+            ),
+            ranked AS (
+                SELECT
+                    item_id,
+                    bucket_ts,
+                    ts,
+                    high,
+                    low,
+                    volume_24h,
+                    mid_price,
+                    ROW_NUMBER() OVER (PARTITION BY item_id, bucket_ts ORDER BY ts ASC) AS rn_open,
+                    ROW_NUMBER() OVER (PARTITION BY item_id, bucket_ts ORDER BY ts DESC) AS rn_close
+                FROM bucketed
+            ),
+            aggregated AS (
+                SELECT
+                    item_id,
+                    bucket_ts,
+                    MAX(CASE WHEN rn_open = 1 THEN mid_price END) AS open_mid,
+                    MAX(mid_price) AS high_mid,
+                    MIN(mid_price) AS low_mid,
+                    MAX(CASE WHEN rn_close = 1 THEN mid_price END) AS close_mid,
+                    MAX(CASE WHEN rn_close = 1 THEN high END) AS close_high,
+                    MAX(CASE WHEN rn_close = 1 THEN low END) AS close_low,
+                    AVG(volume_24h) AS volume_avg,
+                    COUNT(*) AS sample_count
+                FROM ranked
+                GROUP BY item_id, bucket_ts
+            )
+            INSERT INTO {target_table} (
+                item_id,
+                bucket_ts,
+                open_mid,
+                high_mid,
+                low_mid,
+                close_mid,
+                close_high,
+                close_low,
+                volume_avg,
+                sample_count
+            )
+            SELECT
+                item_id,
+                bucket_ts,
+                open_mid,
+                high_mid,
+                low_mid,
+                close_mid,
+                close_high,
+                close_low,
+                volume_avg,
+                sample_count
+            FROM aggregated
+            WHERE 1
+            ON CONFLICT(item_id, bucket_ts) DO UPDATE SET
+                open_mid = COALESCE({target_table}.open_mid, excluded.open_mid),
+                high_mid = CASE
+                    WHEN {target_table}.high_mid IS NULL THEN excluded.high_mid
+                    WHEN excluded.high_mid IS NULL THEN {target_table}.high_mid
+                    ELSE MAX({target_table}.high_mid, excluded.high_mid)
+                END,
+                low_mid = CASE
+                    WHEN {target_table}.low_mid IS NULL THEN excluded.low_mid
+                    WHEN excluded.low_mid IS NULL THEN {target_table}.low_mid
+                    ELSE MIN({target_table}.low_mid, excluded.low_mid)
+                END,
+                close_mid = COALESCE(excluded.close_mid, {target_table}.close_mid),
+                close_high = COALESCE(excluded.close_high, {target_table}.close_high),
+                close_low = COALESCE(excluded.close_low, {target_table}.close_low),
+                volume_avg = CASE
+                    WHEN {target_table}.volume_avg IS NULL THEN excluded.volume_avg
+                    WHEN excluded.volume_avg IS NULL THEN {target_table}.volume_avg
+                    ELSE (
+                        ({target_table}.volume_avg * {target_table}.sample_count) +
+                        (excluded.volume_avg * excluded.sample_count)
+                    ) / ({target_table}.sample_count + excluded.sample_count)
+                END,
+                sample_count = {target_table}.sample_count + excluded.sample_count
+        """
+        connection.execute(query, (bucket_seconds, bucket_seconds, last_rollup_ts))
+
+    @classmethod
+    def rebuild_rollup_table(cls, connection, target_table, bucket_seconds, meta_key):
+        latest_raw_ts_row = connection.execute("SELECT MAX(ts) FROM price_history").fetchone()
+        latest_raw_ts = latest_raw_ts_row[0] if latest_raw_ts_row else None
+        if latest_raw_ts is None:
+            return
+
+        last_rollup_ts = cls._load_meta_int(connection, meta_key)
+        rollup_has_rows = cls._rollup_table_has_rows(connection, target_table)
+        if last_rollup_ts is None or not rollup_has_rows:
+            cls._rebuild_rollup_table_full(connection, target_table, bucket_seconds)
+        elif latest_raw_ts > last_rollup_ts:
+            cls._merge_rollup_table_incremental(connection, target_table, bucket_seconds, last_rollup_ts)
         cls._save_meta_int(connection, meta_key, latest_raw_ts)
 
     @classmethod
